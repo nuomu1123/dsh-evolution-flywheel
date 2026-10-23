@@ -36,7 +36,12 @@
     "evolution",
     "flywheel",
     "self-audit",
-    "clarify"
+    "clarify",
+    "meta-cognition",
+    "multi-agent",
+    "human-in-the-loop",
+    "self-evolving",
+    "local-first"
   ],
   "license": "MIT",
   "peerDependencies": {
