@@ -592,6 +592,26 @@ const memoryStyles = {
     WebkitBoxOrient: 'vertical',
     overflow: 'hidden',
   },
+  detailLink: {
+    alignSelf: 'flex-start',
+    border: 'none',
+    background: 'none',
+    padding: 0,
+    color: '#2563eb',
+    fontSize: '11px',
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  detailBack: {
+    marginLeft: 'auto',
+    border: 'none',
+    background: 'none',
+    padding: 0,
+    color: '#2563eb',
+    fontSize: '11px',
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
   expand: {
     alignSelf: 'flex-start',
     border: 'none',
@@ -1141,6 +1161,7 @@ function MemoryExplorerIcon(props: { size?: number; active?: boolean }) {
 function MemoryExplorerPage() {
   const [items, setItems] = React.useState([] as MemoryItem[])
   const [query, setQuery] = React.useState('')
+  const [detailId, setDetailId] = React.useState(null)
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState('')
   const [deleting, setDeleting] = React.useState(null)
@@ -1305,6 +1326,17 @@ function MemoryExplorerPage() {
     return items.filter((item: MemoryItem) => matchesFilter(item, activeTab, keyword))
   }, [items, query, activeTab])
 
+  const visibleItems = detailId === null
+    ? filtered
+    : filtered.filter((item: MemoryItem) => item.id === detailId)
+
+  const closeDetail = () => {
+    if (detailId !== null) {
+      setExpanded((previous: Record<string, boolean>) => ({ ...previous, [detailId]: false }))
+    }
+    setDetailId(null)
+  }
+
   const remove = async (id: string) => {
     setDeleting(id)
     setError('')
@@ -1461,10 +1493,6 @@ function MemoryExplorerPage() {
       : billing.tokenLimit <= 0
         ? 0
         : Math.min(100, Math.round((billing.lastRunTokens / billing.tokenLimit) * 100))
-  const toggleExpanded = (id: string) => {
-    setExpanded((previous: Record<string, boolean>) => ({ ...previous, [id]: !previous[id] }))
-  }
-
   const whaleBusy = loading || saving !== null || approving !== null || humanDeciding !== null || arbitrating !== null
   return h('div', { ref: pageRef, style: memoryStyles.page }, [
     h('style', { key: 'pulse-style' }, MEMORY_PULSE_CSS),
@@ -1473,6 +1501,14 @@ function MemoryExplorerPage() {
       h('h2', { key: 'title', style: memoryStyles.title }, '记忆控制台'),
       h('span', { key: 'count', style: memoryStyles.count },
         `共 ${items.length} 条 · ${activeTab === 'all' ? '全量视图' : '筛选视图'}`),
+      detailId !== null
+        ? h('button', {
+          key: 'detail-back',
+          type: 'button',
+          style: memoryStyles.detailBack,
+          onClick: closeDetail,
+        }, '← 返回卡片')
+        : null,
     ]),
     h('div', { key: 'dashboard', style: memoryStyles.dashboard }, [
       h('div', { key: 'total', style: memoryStyles.stat }, [
@@ -1633,6 +1669,7 @@ function MemoryExplorerPage() {
         type: 'button',
         style: activeTab === tab.id ? { ...memoryStyles.tab, ...memoryStyles.tabActive } : memoryStyles.tab,
         onClick: () => {
+          setDetailId(null)
           if (typeof React.startTransition === 'function') React.startTransition(() => setActiveTab(tab.id))
           else setActiveTab(tab.id)
         },
@@ -1677,7 +1714,10 @@ function MemoryExplorerPage() {
         value: query,
         placeholder: '按关键词搜索记忆',
         'aria-label': '搜索记忆',
-        onChange: (event: { target: { value: string } }) => setQuery(event.target.value),
+        onChange: (event: { target: { value: string } }) => {
+          setDetailId(null)
+          setQuery(event.target.value)
+        },
       }),
       h('button', {
         key: 'refresh',
@@ -1705,12 +1745,15 @@ function MemoryExplorerPage() {
       : null,
     loading ? h('div', { key: 'loading', style: memoryStyles.empty }, '加载中…') : null,
     !loading ? h('div', { key: 'list', style: memoryStyles.list },
-      filtered.length === 0 ? [empty] : filtered.map((item: MemoryItem) => {
+      visibleItems.length === 0
+        ? [detailId === null ? empty : h('div', { key: 'missing', style: memoryStyles.empty }, '该卡片已不存在')]
+        : visibleItems.map((item: MemoryItem) => {
         const busy = item.status === 'under_review' || item.status === 'debating'
         const human = item.status === 'human_intervention'
         const speculative = item.status === 'speculative'
         const staged = item.status === 'staged' || item.status === 'suggested'
-        const isExpanded = expanded[item.id] === true
+        const isDetail = detailId === item.id
+        const isExpanded = isDetail || expanded[item.id] === true
 
         const cardStyle = human
           ? {
@@ -1810,12 +1853,14 @@ function MemoryExplorerPage() {
                 ])
               })()
               : null,
-            h('button', {
-              key: 'expand',
-              type: 'button',
-              style: memoryStyles.expand,
-              onClick: () => toggleExpanded(item.id),
-            }, isExpanded ? '收起详情 ▲' : '查看详情 ▼'),
+            isDetail
+              ? null
+              : h('button', {
+                key: 'detail-link',
+                type: 'button',
+                style: memoryStyles.detailLink,
+                onClick: () => setDetailId(item.id),
+              }, '详情 →'),
             isExpanded && item.type === 'skill_error_fix'
               ? h('div', { key: 'detail', style: memoryStyles.detail }, [
                 item.errorSignature !== undefined ? `错误：${item.errorSignature}` : null,
