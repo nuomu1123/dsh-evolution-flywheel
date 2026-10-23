@@ -1,6 +1,6 @@
 # 本 bundle 被装入 profile 时插入的唯一 Loader entry。
 # id 与包名一致；单包单 entry，禁止在此处重复插入同名插件。
 - insert:
-    - id: dsh-memory-minimal
-      name: dsh-memory-minimal
+    - id: dsh-evolution-flywheel
+      name: dsh-evolution-flywheel
       config: {}

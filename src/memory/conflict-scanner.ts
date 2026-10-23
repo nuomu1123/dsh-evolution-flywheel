@@ -96,13 +96,13 @@ export function registerConflictScanner(
           if (item !== undefined) events.publish({ type: 'memory:added', item })
         })
         .catch(error => {
-          console.error('[dsh-memory-minimal] conflict scan failed:', error)
+          console.error('[dsh-evolution-flywheel] conflict scan failed:', error)
         })
       return () => {
         cancelled = true
       }
     })
   } catch (error) {
-    console.error('[dsh-memory-minimal] conflict scanner registration failed:', error)
+    console.error('[dsh-evolution-flywheel] conflict scanner registration failed:', error)
   }
 }

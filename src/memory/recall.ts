@@ -67,7 +67,7 @@ function buildDigest(items: readonly MemoryRecord[]): string {
       && item.resolution.trim() !== '')
     .slice(0, 5)
   if (basics.length === 0 && skills.length === 0) return ''
-  const lines = ['[dsh-memory-minimal] 已确认的长期记忆（自动注入，供参考）：']
+  const lines = ['[dsh-evolution-flywheel] 已确认的长期记忆（自动注入，供参考）：']
   for (const item of basics) {
     lines.push(`- ${item.type === 'preference' ? '偏好' : '事实'}：${item.content.slice(0, 160)}`)
   }
@@ -120,7 +120,7 @@ export function registerMemoryRecall(ctx: MemoryRecallContext, store: MemoryStor
       const id = agentIdOf(agent)
       if (id !== undefined) digestsById.set(id, digestCache.text)
     } catch (error) {
-      console.error('[dsh-memory-minimal] memory digest refresh failed:', error)
+      console.error('[dsh-evolution-flywheel] memory digest refresh failed:', error)
     }
   }
   const systemPrompt = (() => {
@@ -143,7 +143,7 @@ export function registerMemoryRecall(ctx: MemoryRecallContext, store: MemoryStor
     try {
       decision = await next()
     } catch (error) {
-      console.error('[dsh-memory-minimal] agent/pre-step continuation failed:', error)
+      console.error('[dsh-evolution-flywheel] agent/pre-step continuation failed:', error)
       return { kind: 'reject' }
     }
     if (typeof payload.agent === 'object' && payload.agent !== null) {
@@ -195,7 +195,7 @@ export function registerMemoryRecall(ctx: MemoryRecallContext, store: MemoryStor
       }
       return { ...decision, messages: [...(decision.messages ?? []), injected] }
     } catch (error) {
-      console.error('[dsh-memory-minimal] memory recall failed:', error)
+      console.error('[dsh-evolution-flywheel] memory recall failed:', error)
       return decision
     }
   }
@@ -210,7 +210,7 @@ export function registerMemoryRecall(ctx: MemoryRecallContext, store: MemoryStor
           if (typeof agent !== 'object' || agent === null) return ''
           const notice = readNotice(agent)?.text ?? ''
           if (notice !== '') {
-            console.error('[dsh-memory-minimal] injecting approved skill resolution into system prompt')
+            console.error('[dsh-evolution-flywheel] injecting approved skill resolution into system prompt')
           }
           return notice
         },
@@ -229,6 +229,6 @@ export function registerMemoryRecall(ctx: MemoryRecallContext, store: MemoryStor
     }
     ctx.effect(() => ctx.on('agent/pre-step', listener))
   } catch (error) {
-    console.error('[dsh-memory-minimal] memory recall registration failed:', error)
+    console.error('[dsh-evolution-flywheel] memory recall registration failed:', error)
   }
 }

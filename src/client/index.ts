@@ -126,7 +126,7 @@ function ClarifyDock(props: ClarifyDockProps) {
     } catch (error) {
       setAnalysis(null)
       setNotice('澄清检测失败，已忽略')
-      console.error('[dsh-memory-minimal] clarify client analyze failed:', error)
+      console.error('[dsh-evolution-flywheel] clarify client analyze failed:', error)
     }
   }
 
@@ -148,7 +148,7 @@ function ClarifyDock(props: ClarifyDockProps) {
       setAnalysis(null)
     } catch (error) {
       setNotice('写回失败，已忽略')
-      console.error('[dsh-memory-minimal] clarify client apply failed:', error)
+      console.error('[dsh-evolution-flywheel] clarify client apply failed:', error)
     }
   }
 
@@ -160,7 +160,7 @@ function ClarifyDock(props: ClarifyDockProps) {
       setNotice('已撤回')
     } catch (error) {
       setNotice('撤回失败，已忽略')
-      console.error('[dsh-memory-minimal] clarify client revert failed:', error)
+      console.error('[dsh-evolution-flywheel] clarify client revert failed:', error)
     }
   }
 
@@ -1970,7 +1970,7 @@ export function apply(ctx: ClientContext): void {
       order: 30,
     }, ClarifyDock)))
   } catch (error) {
-    console.error('[dsh-memory-minimal] clarify client initialization failed:', error)
+    console.error('[dsh-evolution-flywheel] clarify client initialization failed:', error)
   }
 
   try {
@@ -1979,7 +1979,7 @@ export function apply(ctx: ClientContext): void {
       key: MEMORY_PANEL_ID,
     }, MemoryExplorerPage)))
   } catch (error) {
-    console.error('[dsh-memory-minimal] memory page registration failed:', error)
+    console.error('[dsh-evolution-flywheel] memory page registration failed:', error)
   }
 
   try {
@@ -1990,7 +1990,7 @@ export function apply(ctx: ClientContext): void {
       label: () => '记忆',
     }, MemoryExplorerIcon)))
   } catch (error) {
-    console.error('[dsh-memory-minimal] memory sidebar registration failed:', error)
+    console.error('[dsh-evolution-flywheel] memory sidebar registration failed:', error)
   }
 
   try {
@@ -2001,6 +2001,6 @@ export function apply(ctx: ClientContext): void {
       label: () => '记忆管理',
     }, MemoryExplorerPage)))
   } catch (error) {
-    console.error('[dsh-memory-minimal] memory settings registration failed:', error)
+    console.error('[dsh-evolution-flywheel] memory settings registration failed:', error)
   }
 }

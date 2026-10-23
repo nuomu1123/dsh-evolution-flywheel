@@ -1,5 +1,5 @@
 /**
- * dsh-memory-minimal —— 最小可运行的记忆/澄清插件骨架。
+ * dsh-evolution-flywheel —— 最小可运行的记忆/澄清插件骨架。
  *
  * 本文件做三件事：
  * 1. 导出一个合法的 Cordis Host 插件入口（name / inject / apply）；
@@ -19,12 +19,12 @@
 import { registerClarify } from './clarify/index.js'
 import { registerMemoryFeatures, type MemoryHostContext } from './memory/index.js'
 
-export const name = 'dsh-memory-minimal'
+export const name = 'dsh-evolution-flywheel'
 
 /** 依赖 DSH 的工具与命令服务；服务缺失时 Cordis 会等待，不会让宿主启动失败。 */
 export const inject = ['tools', 'commands', 'systemPrompt']
 
-export const PLUGIN_ID = 'dsh-memory-minimal'
+export const PLUGIN_ID = 'dsh-evolution-flywheel'
 
 /** `memory_ping` 的固定返回结构。 */
 export interface MemoryPingResult {
@@ -64,8 +64,8 @@ export interface PluginContext extends MemoryHostContext {
 export const MEMORY_PING_TOOL: ToolDefinitionLike = {
   name: 'memory_ping',
   description:
-    'Probe whether the dsh-memory-minimal plugin is loaded and its tool is callable. '
-    + 'Takes no arguments. Returns { ok: true, plugin: "dsh-memory-minimal", ts: <ISO-8601 timestamp> }. '
+    'Probe whether the dsh-evolution-flywheel plugin is loaded and its tool is callable. '
+    + 'Takes no arguments. Returns { ok: true, plugin: "dsh-evolution-flywheel", ts: <ISO-8601 timestamp> }. '
     + 'This skeleton performs no memory reads or writes.',
   parameters: {
     type: 'object',

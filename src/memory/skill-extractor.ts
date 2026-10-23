@@ -207,7 +207,7 @@ async function generateResolution(ctx: SkillExtractionContext, candidate: SkillC
     return text.trim().slice(0, 1000) || undefined
   } catch (error) {
     if ((error as { name?: string })?.name !== 'AbortError') {
-      console.error('[dsh-memory-minimal] resolution generation failed:', error)
+      console.error('[dsh-evolution-flywheel] resolution generation failed:', error)
     }
     return undefined
   } finally {
@@ -255,7 +255,7 @@ export function registerSkillExtraction(
     }
     if (result.created && onCaptured !== undefined) {
       void Promise.resolve(onCaptured(result.item)).catch(error => {
-        console.error('[dsh-memory-minimal] captured skill review failed:', error)
+        console.error('[dsh-evolution-flywheel] captured skill review failed:', error)
       })
     }
   }
@@ -292,7 +292,7 @@ export function registerSkillExtraction(
           context: call === undefined ? '工具调用失败' : `工具 ${call.name} 执行失败；参数摘要：${call.args.slice(0, 200)}`,
         })
         void capture(candidate, id).catch(error => {
-          console.error('[dsh-memory-minimal] skill capture failed:', error)
+          console.error('[dsh-evolution-flywheel] skill capture failed:', error)
         })
         return
       }
@@ -312,11 +312,11 @@ export function registerSkillExtraction(
             if (item !== undefined) events.publish({ type: 'memory:updated', item })
           })
           .catch(error => {
-            console.error('[dsh-memory-minimal] attach resolution failed:', error)
+            console.error('[dsh-evolution-flywheel] attach resolution failed:', error)
           })
       }
     } catch (error) {
-      console.error('[dsh-memory-minimal] skill extraction handler failed:', error)
+      console.error('[dsh-evolution-flywheel] skill extraction handler failed:', error)
     }
   }
 
@@ -327,10 +327,10 @@ export function registerSkillExtraction(
         context: `Agent 执行失败（turn ${payload.turn ?? '?'}, step ${payload.step ?? '?'}）`,
       })
       void capture(candidate, payload.agent?.id ?? 'agent').catch(error => {
-        console.error('[dsh-memory-minimal] agent error capture failed:', error)
+        console.error('[dsh-evolution-flywheel] agent error capture failed:', error)
       })
     } catch (error) {
-      console.error('[dsh-memory-minimal] agent error handler failed:', error)
+      console.error('[dsh-evolution-flywheel] agent error handler failed:', error)
     }
   }
 
@@ -338,6 +338,6 @@ export function registerSkillExtraction(
     ctx.effect(() => ctx.on('session/event', onSessionEvent))
     ctx.effect(() => ctx.on('agent/error', onAgentError))
   } catch (error) {
-    console.error('[dsh-memory-minimal] skill extraction registration failed:', error)
+    console.error('[dsh-evolution-flywheel] skill extraction registration failed:', error)
   }
 }

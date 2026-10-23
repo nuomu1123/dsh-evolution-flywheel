@@ -246,7 +246,7 @@ export class SkillReviewEngine {
     try {
       rawEvidence = await this.evidenceSearch.search(record.errorSignature ?? '', 3)
     } catch (error) {
-      console.error('[dsh-memory-minimal] evidence search failed:', error)
+      console.error('[dsh-evolution-flywheel] evidence search failed:', error)
       return undefined
     }
 
@@ -268,7 +268,7 @@ export class SkillReviewEngine {
     try {
       appeal = await this.driver.appeal(record, review, evidence)
     } catch (error) {
-      console.error('[dsh-memory-minimal] evidence appeal failed:', error)
+      console.error('[dsh-evolution-flywheel] evidence appeal failed:', error)
       return this.patch(id, {
         status: 'human_intervention',
         debateSummary: review.reason,

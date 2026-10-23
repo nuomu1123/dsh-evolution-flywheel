@@ -1,6 +1,6 @@
 {
-  "name": "dsh-memory-minimal",
-  "version": "0.2.0-alpha.1",
+  "name": "dsh-evolution-flywheel",
+  "version": "1.0.0",
   "description": "dsh-evolution-flywheel：错误感知、子母对抗审核、跨学科夜间漫游与人类最高裁决。",
   "type": "module",
   "main": "./lib/index.js",

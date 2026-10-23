@@ -80,8 +80,8 @@ function captureConsoleError(callback) {
 }
 
 test('插件元数据符合单包单 entry 约定', () => {
-  assert.equal(name, 'dsh-memory-minimal')
-  assert.equal(PLUGIN_ID, 'dsh-memory-minimal')
+  assert.equal(name, 'dsh-evolution-flywheel')
+  assert.equal(PLUGIN_ID, 'dsh-evolution-flywheel')
   assert.deepEqual(inject, ['tools', 'commands', 'systemPrompt'])
 })
 
@@ -117,7 +117,7 @@ test('memory_ping 返回固定结构且 ts 为 ISO 时间戳', async () => {
 
   const result = await MEMORY_PING_TOOL.execute({}, {})
   assert.equal(result.ok, true)
-  assert.equal(result.plugin, 'dsh-memory-minimal')
+  assert.equal(result.plugin, 'dsh-evolution-flywheel')
   assert.match(result.ts, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
 
   const rendered = MEMORY_PING_TOOL.output.render({}, result)
@@ -182,7 +182,7 @@ test('appendAudit 写入合法 JSONL 审计记录', async () => {
     appendAudit('memory.test', { reason: 'unit-test' })
     const entries = await readAudit(10)
     assert.equal(entries.length, 1)
-    assert.equal(entries[0].plugin, 'dsh-memory-minimal')
+    assert.equal(entries[0].plugin, 'dsh-evolution-flywheel')
     assert.equal(entries[0].event, 'memory.test')
     assert.deepEqual(entries[0].payload, { reason: 'unit-test' })
     assert.match(entries[0].ts, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)

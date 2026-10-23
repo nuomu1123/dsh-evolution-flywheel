@@ -127,7 +127,7 @@ class DmaSurfingLogger {
         await appendFile(this.file, `${new Date().toISOString()} ${message}\n`, 'utf8')
       })
     } catch (error) {
-      console.error('[dsh-memory-minimal] DMA log write failed:', error)
+      console.error('[dsh-evolution-flywheel] DMA log write failed:', error)
     }
   }
 }
@@ -549,7 +549,7 @@ export class DmaRunner {
         }
       }
       await surfingLog.log(`run-failed ${this.lastError}`)
-      console.error('[dsh-memory-minimal] DMA exploration failed:', error)
+      console.error('[dsh-evolution-flywheel] DMA exploration failed:', error)
       return []
     } finally {
       this.running = false
@@ -627,7 +627,7 @@ export class DmaScheduler {
     ctx.effect(() => {
       const timer = setInterval(() => {
         void this.tick(new Date()).catch(error => {
-          console.error('[dsh-memory-minimal] DMA scheduler tick failed:', error)
+          console.error('[dsh-evolution-flywheel] DMA scheduler tick failed:', error)
           void surfingLog.log(`scheduler-tick-failed ${error instanceof Error ? error.message : String(error)}`)
         })
       }, memoryConfig.dmaTickMs)
@@ -644,7 +644,7 @@ export class DmaScheduler {
       this.lastKey = key
       return this.runner.runNow()
     } catch (error) {
-      console.error('[dsh-memory-minimal] DMA scheduler tick failed:', error)
+      console.error('[dsh-evolution-flywheel] DMA scheduler tick failed:', error)
       await surfingLog.log(`scheduler-tick-failed ${error instanceof Error ? error.message : String(error)}`)
       return []
     }

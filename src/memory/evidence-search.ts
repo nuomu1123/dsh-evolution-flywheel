@@ -41,7 +41,7 @@ function externalText(value: unknown, maxLength: number): string {
   if (raw === '') return ''
   const clean = sanitize(raw, maxLength)
   if (clean.includes('[已过滤的潜在注入内容]')) {
-    console.error('[dsh-memory-minimal] sanitizeText intercepted a web injection payload')
+    console.error('[dsh-evolution-flywheel] sanitizeText intercepted a web injection payload')
   }
   return clean
 }
@@ -134,7 +134,7 @@ export function createToolEvidenceSearch(
             if (items.length > 0) return items
           }
         } catch (error) {
-          console.error('[dsh-memory-minimal] web_search tool failed, trying ctx.web:', error)
+          console.error('[dsh-evolution-flywheel] web_search tool failed, trying ctx.web:', error)
         }
       }
 
@@ -143,7 +143,7 @@ export function createToolEvidenceSearch(
           const result = await web.search({ query: cleanQuery, maxResults: max }, AbortSignal.timeout(30_000))
           return sourcesFrom(result, max)
         } catch (error) {
-          console.error('[dsh-memory-minimal] ctx.web.search failed:', error)
+          console.error('[dsh-evolution-flywheel] ctx.web.search failed:', error)
         }
       }
 

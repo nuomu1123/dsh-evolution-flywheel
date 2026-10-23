@@ -53,7 +53,7 @@ function createClientContext() {
 
 test('Client 产物以包名注册到模块加载器', () => {
   assert.ok(registration)
-  assert.equal(registration.id, 'dsh-memory-minimal')
+  assert.equal(registration.id, 'dsh-evolution-flywheel')
   assert.equal(typeof registration.factory, 'function')
 })
 

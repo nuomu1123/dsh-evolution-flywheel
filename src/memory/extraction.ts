@@ -44,13 +44,13 @@ export function registerMemoryExtraction(
             if (item !== undefined) events.publish({ type: 'memory:added', item })
           })
           .catch(error => {
-            console.error('[dsh-memory-minimal] memory extraction failed:', error)
+            console.error('[dsh-evolution-flywheel] memory extraction failed:', error)
           })
       } catch (error) {
-        console.error('[dsh-memory-minimal] session/event handler failed:', error)
+        console.error('[dsh-evolution-flywheel] session/event handler failed:', error)
       }
     }))
   } catch (error) {
-    console.error('[dsh-memory-minimal] memory extraction registration failed:', error)
+    console.error('[dsh-evolution-flywheel] memory extraction registration failed:', error)
   }
 }

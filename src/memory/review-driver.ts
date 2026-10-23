@@ -80,7 +80,7 @@ async function complete(
     return { text: text.trim(), tokensUsed: Math.max(0, Math.trunc(tokensUsed)) }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    console.error('[dsh-memory-minimal] review LLM stream failed:', error)
+    console.error('[dsh-evolution-flywheel] review LLM stream failed:', error)
     throw new Error(`审阅模型连接中断，已安全停止：${message}`)
   } finally {
     clearTimeout(timer)

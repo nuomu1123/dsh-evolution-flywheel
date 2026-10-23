@@ -332,10 +332,10 @@ export function registerMemoryApi(
           }
         })
       } catch (error) {
-        console.error('[dsh-memory-minimal] memory API registration failed:', error)
+        console.error('[dsh-evolution-flywheel] memory API registration failed:', error)
       }
     })
   } catch (error) {
-    console.error('[dsh-memory-minimal] memory API injection failed:', error)
+    console.error('[dsh-evolution-flywheel] memory API injection failed:', error)
   }
 }

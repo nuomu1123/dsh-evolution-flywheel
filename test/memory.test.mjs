@@ -20,7 +20,7 @@ import {
 } from '../lib/memory/tools.js'
 
 async function withStore(fn) {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-memory-minimal-'))
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-evolution-flywheel-'))
   try {
     await fn(new MemoryStore(dir), dir)
   } finally {

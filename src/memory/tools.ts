@@ -37,7 +37,7 @@ function renderJson(_args: unknown, value: unknown): Array<{ type: 'text'; text:
 export function memoryListTool(store: MemoryStore): ToolDefinitionLike {
   return {
     name: 'memory_list',
-    description: 'List every memory stored by dsh-memory-minimal. Returns a JSON array of { id, content, type, createdAt }.',
+    description: 'List every memory stored by dsh-evolution-flywheel. Returns a JSON array of { id, content, type, createdAt }.',
     parameters: {
       type: 'object',
       properties: {},
@@ -56,7 +56,7 @@ export function memoryListTool(store: MemoryStore): ToolDefinitionLike {
 export function memorySearchTool(store: MemoryStore): ToolDefinitionLike {
   return {
     name: 'memory_search',
-    description: 'Search local dsh-memory-minimal memories by text. Read-only; returns matching memory records.',
+    description: 'Search local dsh-evolution-flywheel memories by text. Read-only; returns matching memory records.',
     parameters: {
       type: 'object',
       properties: {
@@ -82,7 +82,7 @@ export function memorySearchTool(store: MemoryStore): ToolDefinitionLike {
 export function memoryDeleteTool(store: MemoryStore): ToolDefinitionLike {
   return {
     name: 'memory_delete',
-    description: 'Delete one memory by id. Returns { ok, id, deleted }. Only dsh-memory-minimal\'s own memory store is touched.',
+    description: 'Delete one memory by id. Returns { ok, id, deleted }. Only dsh-evolution-flywheel\'s own memory store is touched.',
     parameters: {
       type: 'object',
       properties: {
@@ -189,7 +189,7 @@ export function registerMemoryTools(ctx: MemoryToolContext, store: MemoryStore):
         }
       })
     } catch (error) {
-      console.error(`[dsh-memory-minimal] ${definition.name} registration failed:`, error)
+      console.error(`[dsh-evolution-flywheel] ${definition.name} registration failed:`, error)
     }
   }
 }

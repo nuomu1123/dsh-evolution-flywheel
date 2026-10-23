@@ -2,11 +2,11 @@
 
 > 一个会从错误中学习、在夜间跨界漫游、并把裁决权始终交还给人类的 DSH 插件。
 
-**状态：alpha · 0.2.0-alpha.1** — 接口与存储格式仍可能变化。
+**状态：1.0.0 · 首个开源版本** — 接口与存储格式可能随 minor 版本演进。
 
 `dsh-evolution-flywheel` 运行在 DeepSeek Harness 上。它把日常工具错误转化为可审核的排错经验，把子母 Agent 的争议送进对抗辩论，并在离线时从生物学、经济学、军事学、控制论和生态学中寻找架构隐喻。
 
-> npm 包名与 Loader entry 仍为 `dsh-memory-minimal`，用于兼容既有 profile 与本地 link；项目名与仓库名为 `dsh-evolution-flywheel`。
+> npm 包名与 Loader entry 均为 `dsh-evolution-flywheel`。本地记忆/审计存储目录沿用历史名 `dsh-memory-minimal`，升级不会自动迁移旧数据。
 
 ## 先读这三条（诚实声明）
 
