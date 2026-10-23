@@ -61,15 +61,24 @@ function buildDigest(items: readonly MemoryRecord[]): string {
   const basics = approved
     .filter(item => item.type === 'preference' || item.type === 'fact')
     .slice(0, 12)
+  const models = approved
+    .filter(item => item.type === 'mental_model')
+    .slice(0, 2)
   const skills = approved
     .filter(item => item.type === 'skill_error_fix'
       && typeof item.resolution === 'string'
       && item.resolution.trim() !== '')
     .slice(0, 5)
-  if (basics.length === 0 && skills.length === 0) return ''
+  if (basics.length === 0 && models.length === 0 && skills.length === 0) return ''
   const lines = ['[dsh-evolution-flywheel] 已确认的长期记忆（自动注入，供参考）：']
   for (const item of basics) {
     lines.push(`- ${item.type === 'preference' ? '偏好' : '事实'}：${item.content.slice(0, 160)}`)
+  }
+  for (const item of models) {
+    const pattern = (item.metaInsight ?? '').slice(0, 80)
+    const applies = (item.resolution ?? '').slice(0, 80)
+    const counter = (item.counterexample ?? '').slice(0, 60)
+    lines.push(`- 思维模型：${item.content.slice(0, 40)} → ${pattern}；适用：${applies}${counter === '' ? '' : `；反例：${counter}`}`)
   }
   for (const item of skills) {
     lines.push(`- 排错经验：${(item.errorSignature ?? item.content).slice(0, 80)} → ${(item.resolution ?? '').slice(0, 120)}`)

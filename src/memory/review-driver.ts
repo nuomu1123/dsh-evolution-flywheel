@@ -35,7 +35,7 @@ function llmOf(ctx: MemoryContextBase): LlmLike {
   return llm as LlmLike
 }
 
-async function complete(
+export async function complete(
   ctx: MemoryContextBase,
   system: string,
   prompt: string,

@@ -4,7 +4,7 @@
  * 从 client/index.ts 抽出的原因：这些逻辑需要独立单测，不依赖 React 渲染。
  */
 
-export type FilterTab = 'all' | 'basic' | 'skill' | 'dma' | 'human' | 'debate' | 'audit'
+export type FilterTab = 'all' | 'basic' | 'skill' | 'dma' | 'human' | 'debate' | 'audit' | 'model'
 
 export interface DebateRound {
   role: 'child' | 'mother'
@@ -14,7 +14,7 @@ export interface DebateRound {
 export interface MemoryItem {
   id: string
   content: string
-  type: 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight'
+  type: 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight' | 'mental_model'
   status:
     | 'suggested'
     | 'staged'
@@ -31,6 +31,7 @@ export interface MemoryItem {
   reviewReason?: string
   debateSummary?: string
   metaInsight?: string
+  counterexample?: string
   humanDecision?: 'adopt' | 'discard'
   challenge?: string
   debateRounds?: DebateRound[]
@@ -54,6 +55,7 @@ export function memoryTypeLabel(type: MemoryItem['type']): string {
   if (type === 'conflict') return '冲突提醒'
   if (type === 'speculative') return '漫游假想'
   if (type === 'meta_insight') return '元认知洞察'
+  if (type === 'mental_model') return '思维模型'
   return type === 'fact' ? '事实' : '偏好'
 }
 
@@ -146,6 +148,7 @@ export function matchesFilter(item: MemoryItem, tab: FilterTab, keyword: string)
     || (tab === 'dma' && isMetaItem(item))
     || (tab === 'human' && item.status === 'human_intervention')
     || (tab === 'debate' && item.type === 'skill_error_fix' && hasDebateRecord(item))
+    || (tab === 'model' && item.type === 'mental_model')
     || tab === 'audit'
   if (!tabMatch) return false
   if (keyword === '') return true
@@ -169,6 +172,11 @@ export function auditItem(item: MemoryItem): AuditVerdict {
   }
   if (item.type === 'preference' || item.type === 'fact') {
     return { durability: 'long-term', necessity: 'needed', reason: '偏好/事实类，长期有效' }
+  }
+  if (item.type === 'mental_model') {
+    return item.status === 'approved'
+      ? { durability: 'long-term', necessity: 'needed', reason: '已采纳的思维模型，可跨任务复用' }
+      : { durability: 'temporary', necessity: 'uncertain', reason: '模型候选，待人类采纳' }
   }
   if (item.type === 'skill_error_fix') {
     if (item.status === 'human_intervention') {
@@ -214,7 +222,7 @@ export function auditSummary(items: readonly MemoryItem[]): AuditSummary {
 
 /** 各分区卡片数量，用于 Tab 徽标。 */
 export function tabCounts(items: readonly MemoryItem[]): Record<FilterTab, number> {
-  const counts: Record<FilterTab, number> = { all: 0, basic: 0, skill: 0, dma: 0, human: 0, debate: 0, audit: 0 }
+  const counts: Record<FilterTab, number> = { all: 0, basic: 0, skill: 0, dma: 0, human: 0, debate: 0, audit: 0, model: 0 }
   for (const item of items) {
     for (const tab of Object.keys(counts) as FilterTab[]) {
       if (matchesFilter(item, tab, '')) counts[tab] += 1

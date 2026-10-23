@@ -19,6 +19,7 @@ import { listSecurityIntercepts } from './sanitize.js'
 import { summarizeUsage } from './usage.js'
 import type { SkillReviewEngine } from './state-machine.js'
 import type { MemoryStore } from './store.js'
+import { distillModel } from './model-distill.js'
 
 const PREFIX = '/memory-explorer'
 const MAX_BODY_BYTES = 16 * 1024
@@ -34,6 +35,7 @@ export interface MemoryApiWebServer {
 export interface MemoryApiContext {
   effect(callback: () => () => void): unknown
   inject?(services: readonly string[], callback: (ctx: { webServer: MemoryApiWebServer }) => void): unknown
+  get?(name: string): unknown
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -88,6 +90,7 @@ export async function handleMemoryApi(
   events: MemoryEventHub,
   reviewEngine?: SkillReviewEngine,
   dmaRunner?: DmaRunner,
+  modelContext?: { get?(name: string): unknown },
 ): Promise<void> {
   try {
     const url = new URL(req.url ?? '/', 'http://localhost')
@@ -163,6 +166,18 @@ export async function handleMemoryApi(
 
     if (req.method === 'GET' && url.pathname === `${PREFIX}/api/events`) {
       events.subscribe(res)
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/model/distill`) {
+      const item = await distillModel(modelContext ?? {}, store)
+      if (item === undefined) {
+        sendJson(res, 200, { ok: false, error: '暂时不足以提炼模型，或提炼失败' })
+        return
+      }
+      events.publish({ type: 'memory:added', item })
+      appendAudit('memory.model.distill', { id: item.id })
+      sendJson(res, 200, { ok: true, item })
       return
     }
 
@@ -324,7 +339,7 @@ export function registerMemoryApi(
           const disposeRoute = webCtx.webServer.register({
             kind: 'prefix',
             path: PREFIX,
-            handler: (req, res) => handleMemoryApi(req, res, store, events, reviewEngine, dmaRunner),
+            handler: (req, res) => handleMemoryApi(req, res, store, events, reviewEngine, dmaRunner, ctx),
           })
           return () => {
             disposeRoute()

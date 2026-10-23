@@ -1078,6 +1078,7 @@ const FILTER_TABS: Array<{ id: FilterTab; label: string }> = [
   { id: 'human', label: '待人类裁决' },
   { id: 'debate', label: '辩论空间' },
   { id: 'audit', label: '自我审计' },
+  { id: 'model', label: '思维模型' },
 ]
 
 const MEMORY_PULSE_CSS = `
@@ -1177,6 +1178,7 @@ function MemoryExplorerPage() {
   const [billing, setBilling] = React.useState(null as Billing | null)
   const [auditEntries, setAuditEntries] = React.useState(null as AuditEntry[] | null)
   const [auditLoading, setAuditLoading] = React.useState(false)
+  const [distilling, setDistilling] = React.useState(false)
   const pageRef = React.useRef(null)
   const [pageVisible, setPageVisible] = React.useState(false)
   React.useEffect(() => {
@@ -1335,6 +1337,29 @@ function MemoryExplorerPage() {
       setExpanded((previous: Record<string, boolean>) => ({ ...previous, [detailId]: false }))
     }
     setDetailId(null)
+  }
+
+  const distill = async () => {
+    setDistilling(true)
+    setError('')
+    try {
+      const response = await fetch(`${MEMORY_API}/model/distill`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+      const body = await response.json()
+      if (!response.ok || body?.ok !== true) {
+        throw new Error(typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`)
+      }
+      const item = body.item as MemoryItem
+      setItems((previous: MemoryItem[]) => [item, ...previous.filter(existing => existing.id !== item.id)])
+      setActiveTab('model')
+    } catch (caught) {
+      setError((caught as Error)?.message || '提炼模型失败')
+    } finally {
+      setDistilling(false)
+    }
   }
 
   const remove = async (id: string) => {
@@ -1725,6 +1750,13 @@ function MemoryExplorerPage() {
         style: memoryStyles.button,
         onClick: () => { void load() },
       }, '刷新'),
+      h('button', {
+        key: 'distill',
+        type: 'button',
+        style: memoryStyles.button,
+        disabled: distilling,
+        onClick: () => { void distill() },
+      }, distilling ? '提炼中…' : '提炼模型'),
     ]),
     error !== ''
       ? h('div', { key: 'error', style: memoryStyles.errorBox }, [

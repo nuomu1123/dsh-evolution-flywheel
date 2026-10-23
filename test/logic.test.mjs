@@ -9,6 +9,7 @@ import {
   matchesFilter,
   auditItem,
   memoryStatusLabel,
+  memoryTypeLabel,
   normalizeMemoryStatus,
   tabCounts,
 } from '../lib/client/logic.js'
@@ -125,6 +126,15 @@ test('auditItem 区分长期/临时与需要/可清理', () => {
   assert.equal(auditItem(item({ status: 'approved', resolution: '修复' })).necessity, 'needed')
   assert.equal(auditItem(item({ status: 'approved', errorSignature: 'vitest failed', resolution: 'x' })).necessity, 'unneeded')
   assert.equal(auditItem(item({ status: 'rejected' })).necessity, 'unneeded')
+})
+
+test('思维模型类型、筛选与审计', () => {
+  const model = item({ type: 'mental_model', status: 'approved', content: '反馈回路' })
+  assert.equal(memoryTypeLabel('mental_model'), '思维模型')
+  assert.equal(matchesFilter(model, 'model', ''), true)
+  assert.equal(auditItem(model).durability, 'long-term')
+  assert.equal(auditItem(item({ type: 'mental_model', status: 'suggested' })).necessity, 'uncertain')
+  assert.equal(tabCounts([model]).model, 1)
 })
 
 test('状态标签与未知状态兜底', () => {

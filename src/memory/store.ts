@@ -17,7 +17,7 @@ const sanitize = (value: unknown, maxLength = 1000): string =>
 const sanitizeQuiet = (value: unknown, maxLength = 1000): string =>
   sanitizeText(value, maxLength, '记忆读取', false)
 
-export type MemoryType = 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight'
+export type MemoryType = 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight' | 'mental_model'
 export type MemoryStatus =
   | 'suggested'
   | 'staged'
@@ -58,6 +58,8 @@ export interface MemoryRecord {
   debateRounds?: DebateRound[]
   /** 辩论/裁决产生的元认知结论，硬限制 100 字。 */
   metaInsight?: string
+  /** 思维模型的适用边界/反例。 */
+  counterexample?: string
   /** 辩论轮次（本实现固定 1 轮）。 */
   reviewRound?: number
   /** 人类圣裁结果。 */
@@ -139,6 +141,7 @@ const MEMORY_TYPES: readonly MemoryType[] = [
   'conflict',
   'speculative',
   'meta_insight',
+  'mental_model',
 ]
 const MEMORY_STATUSES: readonly MemoryStatus[] = [
   'suggested',
@@ -195,6 +198,7 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
     ...(typeof value.challenge === 'string' ? { challenge: sanitizeQuiet(value.challenge, 300) } : {}),
     ...(Array.isArray(value.debateRounds) ? { debateRounds: normalizeDebateRounds(value.debateRounds) } : {}),
     ...(typeof value.metaInsight === 'string' ? { metaInsight: sanitizeQuiet(value.metaInsight, 100) } : {}),
+    ...(typeof value.counterexample === 'string' ? { counterexample: sanitizeQuiet(value.counterexample, 500) } : {}),
     ...(typeof value.reviewRound === 'number' ? { reviewRound: value.reviewRound } : {}),
     ...(value.humanDecision === 'adopt' || value.humanDecision === 'discard'
       ? { humanDecision: value.humanDecision }
@@ -425,6 +429,12 @@ export class MemoryStore {
         ...(patch.challenge !== undefined ? { challenge: sanitize(patch.challenge, 300) } : {}),
         ...(Array.isArray(patch.debateRounds) ? { debateRounds: normalizeDebateRounds(patch.debateRounds) } : {}),
         ...(patch.metaInsight !== undefined ? { metaInsight: clampMetaInsight(patch.metaInsight) } : {}),
+        ...(patch.counterexample !== undefined ? { counterexample: sanitize(patch.counterexample, 500) } : {}),
+        ...(patch.topic !== undefined ? { topic: sanitize(patch.topic, 300) } : {}),
+        ...(patch.discipline !== undefined ? { discipline: sanitize(patch.discipline, 120) } : {}),
+        ...(Array.isArray(patch.sources)
+          ? { sources: patch.sources.filter((source): source is string => typeof source === 'string').slice(0, 10) }
+          : {}),
         ...(patch.reviewRound !== undefined ? { reviewRound: patch.reviewRound } : {}),
         ...(patch.humanDecision !== undefined ? { humanDecision: patch.humanDecision } : {}),
         ...(patch.fingerprint !== undefined ? { fingerprint: patch.fingerprint.trim() } : {}),

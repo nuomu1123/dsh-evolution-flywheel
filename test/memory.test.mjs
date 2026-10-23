@@ -640,3 +640,19 @@ test('systemPrompt 自动注入已确认的偏好与事实摘要', async () => {
     assert.match(text, /项目根目录是 D:\\dsh-workspace/u)
   })
 })
+
+test('mental_model 可持久化并保留反例', async () => {
+  await withStore(async (store, dir) => {
+    const created = await store.appendSuggested('反馈回路', 'mental_model')
+    assert.ok(created)
+    const updated = await store.update(created.id, {
+      metaInsight: '输出回灌输入',
+      counterexample: '不要把一切都说成反馈回路',
+    })
+    assert.equal(updated?.type, 'mental_model')
+    assert.equal(updated?.counterexample, '不要把一切都说成反馈回路')
+    const reopened = new MemoryStore(dir)
+    const found = (await reopened.list()).find(item => item.id === created.id)
+    assert.equal(found?.counterexample, '不要把一切都说成反馈回路')
+  })
+})
