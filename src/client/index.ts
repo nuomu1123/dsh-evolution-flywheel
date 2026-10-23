@@ -244,6 +244,7 @@ interface Billing {
 
 const memoryStyles = {
   page: {
+    position: 'relative',
     height: '100%',
     minHeight: 0,
     display: 'flex',
@@ -845,7 +846,7 @@ const memoryStyles = {
     overflowWrap: 'anywhere',
   },
   whaleWrap: {
-    position: 'fixed',
+    position: 'absolute',
     right: '28px',
     bottom: '24px',
     zIndex: 30,
@@ -1155,6 +1156,21 @@ function MemoryExplorerPage() {
   const [billing, setBilling] = React.useState(null as Billing | null)
   const [auditEntries, setAuditEntries] = React.useState(null as AuditEntry[] | null)
   const [auditLoading, setAuditLoading] = React.useState(false)
+  const pageRef = React.useRef(null)
+  const [pageVisible, setPageVisible] = React.useState(false)
+  React.useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') {
+      setPageVisible(true)
+      return
+    }
+    const node = pageRef.current
+    if (node === null) return
+    const observer = new IntersectionObserver(entries => {
+      setPageVisible(entries.some(entry => entry.isIntersecting))
+    }, { threshold: 0.01 })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
 
   const loadTelemetry = async () => {
     if (typeof document !== 'undefined' && document.hidden) return
@@ -1221,18 +1237,21 @@ function MemoryExplorerPage() {
   }
 
   React.useEffect(() => {
+    if (!pageVisible) return
     const controller = new AbortController()
     void load(controller.signal)
     void loadTelemetry()
     return () => controller.abort()
-  }, [])
+  }, [pageVisible])
 
   React.useEffect(() => {
+    if (!pageVisible) return
     const timer = setInterval(() => { void loadTelemetry() }, 30_000)
     return () => clearInterval(timer)
-  }, [])
+  }, [pageVisible])
 
   React.useEffect(() => {
+    if (!pageVisible) return
     let cancelled = false
     const readHealth = async () => {
       if (typeof document !== 'undefined' && document.hidden) return
@@ -1252,9 +1271,10 @@ function MemoryExplorerPage() {
       cancelled = true
       clearInterval(timer)
     }
-  }, [])
+  }, [pageVisible])
 
   React.useEffect(() => {
+    if (!pageVisible) return
     const source = new EventSource(`${MEMORY_API}/events`)
     const upsert = (item: MemoryItem) => {
       setItems((previous: MemoryItem[]) => {
@@ -1278,7 +1298,7 @@ function MemoryExplorerPage() {
       }
     }
     return () => source.close()
-  }, [])
+  }, [pageVisible])
 
   const filtered = React.useMemo(() => {
     const keyword = query.trim().toLowerCase()
@@ -1446,9 +1466,9 @@ function MemoryExplorerPage() {
   }
 
   const whaleBusy = loading || saving !== null || approving !== null || humanDeciding !== null || arbitrating !== null
-  return h('div', { style: memoryStyles.page }, [
+  return h('div', { ref: pageRef, style: memoryStyles.page }, [
     h('style', { key: 'pulse-style' }, MEMORY_PULSE_CSS),
-    h(WhaleMascot, { busy: whaleBusy, error: error !== '' }),
+    pageVisible ? h(WhaleMascot, { busy: whaleBusy, error: error !== '' }) : null,
     h('div', { key: 'header', style: memoryStyles.header }, [
       h('h2', { key: 'title', style: memoryStyles.title }, '记忆控制台'),
       h('span', { key: 'count', style: memoryStyles.count },
