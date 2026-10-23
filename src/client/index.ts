@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Client 半：clarify dock + 记忆浏览器（设置页 / 侧边栏 / 主面板）。
  *
  * 行为约束：
@@ -1157,6 +1157,7 @@ function MemoryExplorerPage() {
   const [auditLoading, setAuditLoading] = React.useState(false)
 
   const loadTelemetry = async () => {
+    if (typeof document !== 'undefined' && document.hidden) return
     try {
       const [securityResponse, billingResponse] = await Promise.all([
         fetch(`${MEMORY_API}/security-log`, { cache: 'no-store' }),
@@ -1164,11 +1165,13 @@ function MemoryExplorerPage() {
       ])
       const securityBody = await securityResponse.json()
       if (securityResponse.ok && securityBody?.ok === true && Array.isArray(securityBody.entries)) {
-        setSecurityLog(securityBody.entries as SecurityIntercept[])
+        const entries = securityBody.entries as SecurityIntercept[]
+        setSecurityLog((previous: SecurityIntercept[]) => JSON.stringify(previous) === JSON.stringify(entries) ? previous : entries)
       }
       const billingBody = await billingResponse.json()
       if (billingResponse.ok && billingBody?.ok === true && billingBody.billing !== undefined) {
-        setBilling(billingBody.billing as Billing)
+        const next = billingBody.billing as Billing
+        setBilling((previous: Billing | null) => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)
       }
     } catch {
       // 遥测失败不阻塞主列表；保留上一次成功的数据。
@@ -1232,6 +1235,7 @@ function MemoryExplorerPage() {
   React.useEffect(() => {
     let cancelled = false
     const readHealth = async () => {
+      if (typeof document !== 'undefined' && document.hidden) return
       try {
         const response = await fetch(`${MEMORY_API}/health`, { cache: 'no-store' })
         const body = await response.json()
@@ -1608,7 +1612,10 @@ function MemoryExplorerPage() {
         key: tab.id,
         type: 'button',
         style: activeTab === tab.id ? { ...memoryStyles.tab, ...memoryStyles.tabActive } : memoryStyles.tab,
-        onClick: () => setActiveTab(tab.id),
+        onClick: () => {
+          if (typeof React.startTransition === 'function') React.startTransition(() => setActiveTab(tab.id))
+          else setActiveTab(tab.id)
+        },
       }, `${tab.label} ${counts[tab.id]}`))),
     activeTab === 'debate'
       ? h('div', { key: 'debate-banner', style: memoryStyles.debateBanner }, [
