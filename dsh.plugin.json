@@ -1,0 +1,20 @@
+{
+  "id": "dsh-memory-minimal",
+  "name": "dsh-memory-minimal",
+  "version": "0.2.0",
+  "description": "dsh-evolution-flywheel：错误感知、子母对抗审核、跨学科夜间漫游与人类最高裁决（包名兼容 dsh-memory-minimal）。",
+  "entry": "./lib/index.js",
+  "client": "./lib/client.js",
+  "patch": "./cordis.patch.yml",
+  "tools": [
+    "memory_ping",
+    "memory_list",
+    "memory_search",
+    "memory_delete",
+    "memory_approve",
+    "memory_update_resolution"
+  ],
+  "commands": [
+    "clarify"
+  ]
+}

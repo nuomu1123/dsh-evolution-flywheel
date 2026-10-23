@@ -1,0 +1,39 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+lib/
+dist/
+*.tsbuildinfo
+
+# local harness state and logs
+.dsh/
+*.log
+dma_surfing.log
+
+# secrets and local configuration
+.env
+.env.*
+!.env.example
+*.local
+config.local.*
+
+# test / editor / OS noise
+coverage/
+.nyc_output/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# package manager noise
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local memory / audit data
+memories.jsonl
+audit.jsonl
+storages/
