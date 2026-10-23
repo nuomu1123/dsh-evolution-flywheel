@@ -24,6 +24,9 @@ const fakeReact = {
   useMemo(factory) {
     return factory()
   },
+  memo(component) {
+    return component
+  },
 }
 
 function createClientContext() {

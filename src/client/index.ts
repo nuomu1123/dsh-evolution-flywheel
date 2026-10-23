@@ -313,6 +313,11 @@ const memoryStyles = {
     gap: '12px',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
+    resize: 'both',
+    overflow: 'auto',
+    minWidth: '240px',
+    minHeight: '96px',
+    maxWidth: '100%',
   },
   itemMain: {
     flex: 1,
@@ -1076,6 +1081,33 @@ const MEMORY_PULSE_CSS = `
 }
 `
 
+const WhaleMascot = React.memo(function WhaleMascot(props: { busy: boolean; error: boolean }) {
+  const [tip, setTip] = React.useState('正在深度思考…')
+  React.useEffect(() => {
+    const tips = ['正在深度思考…', '已记录经验']
+    const timer = setInterval(() => {
+      setTip(tips[Math.floor(Math.random() * tips.length)] ?? tips[0])
+    }, 9000)
+    return () => clearInterval(timer)
+  }, [])
+  return h('div', { style: memoryStyles.whaleWrap, 'aria-hidden': true }, [
+    h('span', {
+      key: 'emoji',
+      style: {
+        ...memoryStyles.whaleEmoji,
+        animationName: props.error ? 'dshWhaleShake' : 'dshWhaleFloat',
+        ...(props.error ? { filter: 'saturate(2) drop-shadow(0 0 10px rgba(217, 45, 32, 0.85))' } : {}),
+      },
+    }, '🐳'),
+    h('span', {
+      key: 'bubble',
+      style: props.error
+        ? { ...memoryStyles.whaleBubble, borderColor: '#d92d20', color: '#b91c1c' }
+        : memoryStyles.whaleBubble,
+    }, props.error ? '遇到问题了…' : props.busy ? '正在深度思考…' : tip),
+  ])
+})
+
 function isSafeHttpUrl(value: string): boolean {
   return /^https?:\/\//iu.test(value)
 }
@@ -1123,14 +1155,6 @@ function MemoryExplorerPage() {
   const [billing, setBilling] = React.useState(null as Billing | null)
   const [auditEntries, setAuditEntries] = React.useState(null as AuditEntry[] | null)
   const [auditLoading, setAuditLoading] = React.useState(false)
-  const [whaleTip, setWhaleTip] = React.useState('正在深度思考…')
-  React.useEffect(() => {
-    const tips = ['正在深度思考…', '已记录经验']
-    const timer = setInterval(() => {
-      setWhaleTip(tips[Math.floor(Math.random() * tips.length)] ?? tips[0])
-    }, 9000)
-    return () => clearInterval(timer)
-  }, [])
 
   const loadTelemetry = async () => {
     try {
@@ -1420,22 +1444,7 @@ function MemoryExplorerPage() {
   const whaleBusy = loading || saving !== null || approving !== null || humanDeciding !== null || arbitrating !== null
   return h('div', { style: memoryStyles.page }, [
     h('style', { key: 'pulse-style' }, MEMORY_PULSE_CSS),
-    h('div', { key: 'whale', style: memoryStyles.whaleWrap, 'aria-hidden': true }, [
-      h('span', {
-        key: 'emoji',
-        style: {
-          ...memoryStyles.whaleEmoji,
-          animationName: error !== '' ? 'dshWhaleShake' : 'dshWhaleFloat',
-          ...(error !== '' ? { filter: 'saturate(2) drop-shadow(0 0 10px rgba(217, 45, 32, 0.85))' } : {}),
-        },
-      }, '🐳'),
-      h('span', {
-        key: 'bubble',
-        style: error !== ''
-          ? { ...memoryStyles.whaleBubble, borderColor: '#d92d20', color: '#b91c1c' }
-          : memoryStyles.whaleBubble,
-      }, error !== '' ? '遇到问题了…' : whaleBusy ? '正在深度思考…' : whaleTip),
-    ]),
+    h(WhaleMascot, { busy: whaleBusy, error: error !== '' }),
     h('div', { key: 'header', style: memoryStyles.header }, [
       h('h2', { key: 'title', style: memoryStyles.title }, '记忆控制台'),
       h('span', { key: 'count', style: memoryStyles.count },
