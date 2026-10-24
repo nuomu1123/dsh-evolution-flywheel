@@ -5,7 +5,7 @@
  * 不接触 profile、node_modules 或其他插件的数据。
  */
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { clampMetaInsight, sanitizeText } from './sanitize.js'
@@ -317,7 +317,7 @@ export class MemoryStore {
    * @returns 新记录；重复或空内容返回 undefined。
    */
   appendSuggested(content: string, type: MemoryType): Promise<MemoryRecord | undefined> {
-    const text = content.trim().slice(0, MAX_CONTENT_CHARS)
+    const text = sanitize(content, MAX_CONTENT_CHARS)
     if (text === '') return Promise.resolve(undefined)
     return this.runExclusive(async () => {
       await this.ensureSeeded()
@@ -347,6 +347,10 @@ export class MemoryStore {
       const current = items[index]
       if (current === undefined) return undefined
       if (current.status === 'approved') return current
+      // 只允许从待确认状态批准；human_intervention 必须走 humanDecide，避免绕过人类裁决。
+      if (current.status !== 'suggested' && current.status !== 'staged' && current.status !== 'speculative') {
+        return undefined
+      }
       const updated: MemoryRecord = {
         ...current,
         status: 'approved',
@@ -513,6 +517,8 @@ export class MemoryStore {
         ...(patch.count !== undefined ? { count: patch.count } : {}),
         ...(patch.reviewTokens !== undefined ? { reviewTokens: patch.reviewTokens } : {}),
         ...(patch.debateTokens !== undefined ? { debateTokens: patch.debateTokens } : {}),
+        ...(patch.tokensUsed !== undefined ? { tokensUsed: Math.max(0, Math.trunc(patch.tokensUsed)) } : {}),
+        ...(patch.runId !== undefined ? { runId: sanitize(patch.runId, 100) } : {}),
         ...(patch.thinkingModel !== undefined ? { thinkingModel: sanitize(patch.thinkingModel, 120) } : {}),
         ...(patch.analogyReason !== undefined ? { analogyReason: sanitize(patch.analogyReason, 500) } : {}),
         ...(patch.effectiveFor !== undefined ? { effectiveFor: sanitize(patch.effectiveFor, 300) } : {}),
@@ -693,7 +699,10 @@ export class MemoryStore {
     return this.writes.enqueue(async () => {
       await mkdir(dirname(this.file), { recursive: true })
       const text = items.map(item => JSON.stringify(item)).join('\n')
-      await writeFile(this.file, text === '' ? '' : `${text}\n`, 'utf8')
+      // 先写临时文件再 rename，避免崩溃或断电留下半行/空文件。
+      const temp = `${this.file}.${process.pid}.tmp`
+      await writeFile(temp, text === '' ? '' : `${text}\n`, 'utf8')
+      await rename(temp, this.file)
     })
   }
 }

@@ -127,12 +127,28 @@ test('memory 工具共用同一存储并返回预期结构', async () => {
     assert.equal(Array.isArray(list), true)
     assert.equal(list.length, 4)
     assert.ok(list.every(item => item.status === 'approved'))
+    assert.equal(listTool.output.schema.items.additionalProperties, true)
 
     const target = list[0]
     assert.ok(target)
     const deleted = await deleteTool.execute({ id: target.id }, {})
     assert.deepEqual(deleted, { ok: true, id: target.id, deleted: true })
     assert.equal((await store.list()).length, 3)
+  })
+})
+
+test('approve 只接受待确认状态，不能绕过人类裁决', async () => {
+  await withStore(async (store) => {
+    const human = await store.appendSuggested('等待人类裁决的记录', 'fact')
+    assert.ok(human)
+    await store.update(human.id, { status: 'human_intervention' })
+    assert.equal(await store.approve(human.id), undefined)
+    assert.equal((await store.list()).find(item => item.id === human.id)?.status, 'human_intervention')
+
+    const staged = await store.appendSuggested('普通草稿', 'fact')
+    assert.ok(staged)
+    const approved = await store.approve(staged.id)
+    assert.equal(approved?.status, 'approved')
   })
 })
 
@@ -186,6 +202,26 @@ test('HTTP API 支持 list、resolution、approve 与 delete', async () => {
     assert.equal(deleteRes.status, 200)
     assert.equal(JSON.parse(deleteRes.body).deleted, true)
     assert.equal((await store.list()).some(item => item.id === draft.id), false)
+  })
+})
+
+test('HTTP API /reject 把策略置为 rejected 且保留记录', async () => {
+  await withStore(async (store) => {
+    const events = new MemoryEventHub()
+    const strategy = await store.appendSuggested('先抽象后映射', 'extraction_strategy')
+    assert.ok(strategy)
+    const res = createResponse()
+    await handleMemoryApi(
+      postRequest('/memory-explorer/api/reject', { id: strategy.id }),
+      res,
+      store,
+      events,
+    )
+    assert.equal(res.status, 200)
+    assert.equal(JSON.parse(res.body).item.status, 'rejected')
+    const after = (await store.list()).find(item => item.id === strategy.id)
+    assert.equal(after?.status, 'rejected')
+    assert.equal(after?.content, '先抽象后映射')
   })
 })
 
@@ -622,6 +658,7 @@ test('systemPrompt 自动注入已确认的偏好与事实摘要', async () => {
     assert.equal(typeof handler, 'function')
     const digest = definitions.get('memory:digest')
     assert.ok(digest)
+    assert.equal(digest.interpolate, false)
 
     const agent = {}
     const user = {

@@ -315,6 +315,28 @@ export async function handleMemoryApi(
       return
     }
 
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/reject`) {
+      if (!requireJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
+        return
+      }
+      const body = await readJsonBody(req)
+      const id = typeof body.id === 'string' ? body.id.trim() : ''
+      if (id === '') {
+        sendJson(res, 400, { ok: false, error: 'id is required' })
+        return
+      }
+      const item = await store.update(id, { status: 'rejected' })
+      if (item === undefined) {
+        sendJson(res, 404, { ok: false, error: 'memory not found' })
+        return
+      }
+      events.publish({ type: 'memory:updated', item })
+      appendAudit('memory.reject', { id })
+      sendJson(res, 200, { ok: true, id, item })
+      return
+    }
+
     if (req.method === 'POST' && url.pathname === `${PREFIX}/api/delete`) {
       if (!requireJsonContentType(req)) {
         sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })

@@ -271,7 +271,11 @@ export class SkillReviewEngine {
     outcome: string,
   ): Promise<MemoryRecord | undefined> {
     if (this.strategy === undefined || item === undefined) return item
+    // 交人类裁决时不额外消耗 LLM；预算耗尽时也跳过反思。
+    if (item.status === 'human_intervention') return item
     try {
+      const budget = await readBudget(this.store)
+      if (budget.exceeded) return item
       await this.strategy.reflect({ stage: 'small', task, outcome })
     } catch (error) {
       console.error('[dsh-evolution-flywheel] strategy reflection failed:', error)
@@ -306,6 +310,10 @@ export class SkillReviewEngine {
     previousSummary: string,
   ): Promise<MemoryRecord | undefined> {
     if (this.evidenceSearch === undefined || this.driver.appeal === undefined) return undefined
+
+    // 用最新记录作为基线，避免丢失本轮辩论产生的 token。
+    const fresh = (await this.store.list()).find(item => item.id === id)
+    const baseDebateTokens = fresh?.debateTokens ?? record.debateTokens ?? 0
 
     let rawEvidence: EvidenceItem[]
     try {
@@ -346,7 +354,7 @@ export class SkillReviewEngine {
         status: 'approved',
         debateSummary: summaryWithEvidence,
         ...(appeal.tokensUsed !== undefined
-          ? { debateTokens: (record.debateTokens ?? 0) + appeal.tokensUsed }
+          ? { debateTokens: baseDebateTokens + appeal.tokensUsed }
           : {}),
         ...(meta !== undefined ? { metaInsight: meta } : {}),
         ...(appeal.resolution !== undefined && appeal.resolution.trim() !== ''
@@ -359,7 +367,7 @@ export class SkillReviewEngine {
       status: 'human_intervention',
       debateSummary: `${summaryWithEvidence}\n场外证据仍未说服母 Agent。`.slice(0, 800),
       ...(appeal.tokensUsed !== undefined
-        ? { debateTokens: (record.debateTokens ?? 0) + appeal.tokensUsed }
+        ? { debateTokens: baseDebateTokens + appeal.tokensUsed }
         : {}),
       ...(meta !== undefined ? { metaInsight: meta } : {}),
     })

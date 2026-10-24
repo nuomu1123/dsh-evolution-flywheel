@@ -108,25 +108,37 @@ export function rankStrategies(items: readonly MemoryRecord[], limit = 3): Memor
     .slice(0, limit)
 }
 
-/** 生成注入到提示词的方法论段落；空库返回空串。 */
-export function buildStrategyPrompt(strategies: readonly MemoryRecord[]): string {
-  if (strategies.length === 0) return ''
-  const lines = [
-    '【提炼方法论自注入】下面是你过去执行提炼任务后沉淀的策略，按成功度排序，请优先沿用：',
-  ]
-  for (const item of strategies) {
-    const status = item.status === 'approved' ? '已裁决' : '候选（未经人类裁决，仅供试用）'
-    const details = [
-      item.thinkingModel === undefined ? '' : `思维模型：${item.thinkingModel}`,
-      item.analogyReason === undefined ? '' : `类比理由：${item.analogyReason}`,
-      item.effectiveFor === undefined ? '' : `最适用于：${item.effectiveFor}`,
-    ].filter(detail => detail !== '')
-    lines.push([
-      `- 策略：${item.content.slice(0, 80)}（${status}；成功 ${item.successCount ?? 0} 次 · 已用 ${item.appliedCount ?? 0} 次）`,
-      ...details.map(detail => `  ${detail}`),
-    ].join('\n'))
+/** 生成注入到提示词的方法论段落；空库返回空串。人工裁决的法则优先。 */
+export function buildStrategyPrompt(
+  strategies: readonly MemoryRecord[],
+  rules: readonly MemoryRecord[] = [],
+): string {
+  if (strategies.length === 0 && rules.length === 0) return ''
+  const lines: string[] = []
+  if (rules.length > 0) {
+    lines.push('【跨域映射法则（人类已裁决，最高优先级）】')
+    for (const item of rules) {
+      const basis = item.analogyReason === undefined ? '' : `（依据：${item.analogyReason.slice(0, 100)}）`
+      lines.push(`- ${item.content.slice(0, 120)}${basis}`)
+    }
+    lines.push('')
   }
-  lines.push('如果本次材料与上述方法论不匹配，请明确说明并换用更合适的方法，不要硬套。')
+  if (strategies.length > 0) {
+    lines.push('【提炼方法论自注入】下面是你过去执行提炼任务后沉淀的策略，按成功度排序，请优先沿用：')
+    for (const item of strategies) {
+      const status = item.status === 'approved' ? '已裁决' : '候选（未经人类裁决，仅供试用）'
+      const details = [
+        item.thinkingModel === undefined ? '' : `思维模型：${item.thinkingModel}`,
+        item.analogyReason === undefined ? '' : `类比理由：${item.analogyReason}`,
+        item.effectiveFor === undefined ? '' : `最适用于：${item.effectiveFor}`,
+      ].filter(detail => detail !== '')
+      lines.push([
+        `- 策略：${item.content.slice(0, 80)}（${status}；成功 ${item.successCount ?? 0} 次 · 已用 ${item.appliedCount ?? 0} 次）`,
+        ...details.map(detail => `  ${detail}`),
+      ].join('\n'))
+    }
+    lines.push('如果本次材料与上述方法论不匹配，请明确说明并换用更合适的方法，不要硬套。')
+  }
   return lines.join('\n').slice(0, 1800)
 }
 
@@ -137,16 +149,22 @@ export async function prepareStrategyInjection(
 ): Promise<StrategyInjection> {
   const items = await store.list()
   const ranked = rankStrategies(items, limit)
-  if (ranked.length === 0) return { ids: [], names: [], text: '' }
+  const rules = approvedRules(items)
+  if (ranked.length === 0 && rules.length === 0) return { ids: [], names: [], text: '' }
   const ids = ranked.map(item => item.id)
-  const names = ranked.map(item => item.content)
+  const names = [
+    ...rules.map(item => `法则：${item.content.slice(0, 60)}`),
+    ...ranked.map(item => item.content),
+  ]
   try {
-    await store.touchStrategies(ids)
+    if (ids.length > 0) await store.touchStrategies(ids)
   } catch (error) {
     console.error('[dsh-evolution-flywheel] strategy touch failed:', error)
   }
-  console.error(`[dsh-evolution-flywheel] 提炼前注入 ${ranked.length} 条策略：${names.join(' / ')}`)
-  return { ids, names, text: buildStrategyPrompt(ranked) }
+  console.error(
+    `[dsh-evolution-flywheel] 提炼前注入 ${rules.length} 条法则、${ranked.length} 条策略：${names.join(' / ')}`,
+  )
+  return { ids, names, text: buildStrategyPrompt(ranked, rules) }
 }
 
 /** 已裁决的融合法则（最高优先级），按成功次数与时间排序。 */
@@ -205,8 +223,8 @@ export function parseStrategyMerge(
   if (rule === '') return undefined
   const indexed = Array.isArray(value.sourceIds) ? value.sourceIds : []
   const sourceIds = [...new Set(indexed
-    .filter((entry): entry is number =>
-      typeof entry === 'number' && Number.isInteger(entry) && entry >= 1 && entry <= strategies.length)
+    .map(entry => typeof entry === 'number' ? entry : typeof entry === 'string' ? Number(entry) : Number.NaN)
+    .filter(entry => Number.isInteger(entry) && entry >= 1 && entry <= strategies.length)
     .map(entry => strategies[entry - 1]?.id)
     .filter((id): id is string => typeof id === 'string'))].slice(0, 8)
   return {
@@ -290,7 +308,9 @@ export async function reflectAndStore(
     const name = reflection.name.trim()
     if (name === '') return undefined
     const existing = (await store.list()).find(item =>
-      item.type === 'extraction_strategy' && item.content.trim() === name)
+      item.type === 'extraction_strategy'
+      && item.content.trim() === name
+      && item.status !== 'rejected')
     if (existing !== undefined) return existing
     const created = await store.appendSuggested(name, 'extraction_strategy')
     if (created === undefined) return undefined
@@ -341,7 +361,8 @@ export async function mergeStrategyLibrary(
     const existing = items.find(item =>
       item.type === 'extraction_strategy'
       && item.rule === true
-      && item.content.trim() === merged.rule.trim())
+      && item.content.trim() === merged.rule.trim()
+      && item.status !== 'rejected')
     if (existing !== undefined) return existing
     const created = await store.appendSuggested(merged.rule, 'extraction_strategy')
     if (created === undefined) return undefined

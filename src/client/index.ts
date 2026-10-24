@@ -331,6 +331,15 @@ const memoryStyles = {
     fontSize: '14px',
     lineHeight: 1.5,
     wordBreak: 'break-word',
+    whiteSpace: 'pre-wrap',
+  },
+  strategyBrief: {
+    fontSize: '11px',
+    lineHeight: 1.6,
+    opacity: 0.72,
+    padding: '2px 8px',
+    border: '1px dashed var(--dsw-alias-border-base, rgba(128,128,128,.28))',
+    borderRadius: '6px',
   },
   meta: {
     display: 'flex',
@@ -492,6 +501,7 @@ const memoryStyles = {
     lineHeight: 1.5,
     opacity: 0.78,
     whiteSpace: 'pre-wrap',
+    overflowWrap: 'anywhere',
   },
   resolutionLabel: {
     fontSize: '12px',
@@ -1215,6 +1225,7 @@ function MemoryExplorerPage() {
   const [distilling, setDistilling] = React.useState(false)
   const [density, setDensity] = React.useState('standard')
   const pageRef = React.useRef(null)
+  const loadSeqRef = React.useRef(0)
   const [pageVisible, setPageVisible] = React.useState(false)
   React.useEffect(() => {
     if (typeof IntersectionObserver === 'undefined') {
@@ -1268,6 +1279,7 @@ function MemoryExplorerPage() {
   }
 
   const load = async (signal?: AbortSignal) => {
+    const sequence = ++loadSeqRef.current
     setLoading(true)
     setError('')
     try {
@@ -1282,6 +1294,7 @@ function MemoryExplorerPage() {
           status: normalizeMemoryStatus(item.status),
         }))
         : []
+      if (sequence !== loadSeqRef.current) return
       setItems(next)
       if (typeof body.health?.writeQueue === 'string') {
         setWriteQueue(body.health.writeQueue)
@@ -1334,7 +1347,10 @@ function MemoryExplorerPage() {
   React.useEffect(() => {
     if (!pageVisible) return
     const source = new EventSource(`${MEMORY_API}/events`)
-    const upsert = (item: MemoryItem) => {
+    const upsert = (raw: MemoryItem) => {
+      if (raw === null || typeof raw !== 'object') return
+      if (typeof raw.id !== 'string' || typeof raw.content !== 'string') return
+      const item: MemoryItem = { ...raw, status: normalizeMemoryStatus(raw.status) }
       setItems((previous: MemoryItem[]) => {
         const index = previous.findIndex(existing => existing.id === item.id)
         if (index < 0) return [item, ...previous]
@@ -1397,6 +1413,7 @@ function MemoryExplorerPage() {
         item,
         ...previous.filter(existing => !addedIds.has(existing.id)),
       ])
+      setDetailId(null)
       setActiveTab(extras.length > 0 ? 'strategy' : 'model')
     } catch (caught) {
       setError((caught as Error)?.message || '提炼模型失败')
@@ -1405,11 +1422,14 @@ function MemoryExplorerPage() {
     }
   }
 
-  const remove = async (id: string) => {
+  const remove = async (item: MemoryItem) => {
+    const id = item.id
+    // 提炼策略/法则是可追溯资产：丢弃只置为 rejected，不物理删除。
+    const soft = item.type === 'extraction_strategy'
     setDeleting(id)
     setError('')
     try {
-      const response = await fetch(`${MEMORY_API}/delete`, {
+      const response = await fetch(`${MEMORY_API}/${soft ? 'reject' : 'delete'}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ id }),
@@ -1418,9 +1438,15 @@ function MemoryExplorerPage() {
       if (!response.ok || body?.ok !== true) {
         throw new Error(typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`)
       }
-      setItems((previous: MemoryItem[]) => previous.filter(item => item.id !== id))
+      if (soft) {
+        setItems((previous: MemoryItem[]) =>
+          previous.map(existing => existing.id === id ? body.item : existing))
+      } else {
+        setItems((previous: MemoryItem[]) => previous.filter(existing => existing.id !== id))
+      }
+      setDetailId(null)
     } catch (caught) {
-      setError((caught as Error)?.message || '删除失败')
+      setError((caught as Error)?.message || (soft ? '丢弃失败' : '删除失败'))
     } finally {
       setDeleting(null)
     }
@@ -1473,6 +1499,7 @@ function MemoryExplorerPage() {
         throw new Error(typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`)
       }
       setItems((previous: MemoryItem[]) => previous.map(existing => existing.id === item.id ? body.item : existing))
+      setDetailId(null)
     } catch (caught) {
       setError((caught as Error)?.message || '确认失败')
     } finally {
@@ -1502,6 +1529,18 @@ function MemoryExplorerPage() {
     setHumanDeciding(`${id}:${decision}`)
     setError('')
     try {
+      const target = items.find((item: MemoryItem) => item.id === id)
+      if (target?.type === 'skill_error_fix') {
+        const resolution = draftOf(target).trim()
+        if (resolution !== '' && resolution !== (target.resolution ?? '')) {
+          try {
+            await saveResolution(id, resolution)
+          } catch (caught) {
+            setError((caught as Error)?.message || '保存解决办法失败，请先保存再裁决')
+            return
+          }
+        }
+      }
       const response = await fetch(`${MEMORY_API}/human-decision`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -1513,6 +1552,7 @@ function MemoryExplorerPage() {
       }
       setItems((previous: MemoryItem[]) =>
         previous.map(item => item.id === id ? body.item : item))
+      setDetailId(null)
     } catch (caught) {
       setError((caught as Error)?.message || '人类裁决失败')
     } finally {
@@ -1534,6 +1574,7 @@ function MemoryExplorerPage() {
         throw new Error(typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`)
       }
       setItems((previous: MemoryItem[]) => previous.map(item => item.id === id ? body.item : item))
+      setDetailId(null)
     } catch (caught) {
       setError((caught as Error)?.message || '开卷申诉失败')
     } finally {
@@ -1541,7 +1582,11 @@ function MemoryExplorerPage() {
     }
   }
 
-  const empty = h('div', { key: 'empty', style: memoryStyles.empty }, query.trim() === '' ? '暂无记忆' : '没有匹配的记忆')
+  const empty = h('div', { key: 'empty', style: memoryStyles.empty }, activeTab === 'strategy'
+    ? (query.trim() === ''
+      ? '方法论库还是空的：跑一次小提炼或大提炼，系统会自己沉淀提炼策略'
+      : '没有匹配的方法论')
+    : query.trim() === '' ? '暂无记忆' : '没有匹配的记忆')
   const counts = React.useMemo(() => tabCounts(items), [items])
   const audit = React.useMemo(() => auditSummary(items), [items])
   const humanCount = items.filter((item: MemoryItem) => item.status === 'human_intervention').length
@@ -1557,14 +1602,14 @@ function MemoryExplorerPage() {
   const tokenPercent = billing === null
     ? 0
     : billing.dailyBudget !== undefined && billing.dailyBudget > 0
-      ? Math.min(100, Math.round((billing.todayTokens / billing.dailyBudget) * 100))
-      : billing.tokenLimit <= 0
+      ? Math.min(100, Math.round(((billing.todayTokens ?? 0) / billing.dailyBudget) * 100))
+      : (billing.tokenLimit ?? 0) <= 0
         ? 0
-        : Math.min(100, Math.round((billing.lastRunTokens / billing.tokenLimit) * 100))
+        : Math.min(100, Math.round(((billing.lastRunTokens ?? 0) / billing.tokenLimit) * 100))
   const whaleBusy = loading || saving !== null || approving !== null || humanDeciding !== null || arbitrating !== null
   return h('div', { ref: pageRef, style: memoryStyles.page }, [
     h('style', { key: 'pulse-style' }, MEMORY_PULSE_CSS),
-    pageVisible ? h(WhaleMascot, { busy: whaleBusy, error: error !== '' }) : null,
+    pageVisible ? h(WhaleMascot, { key: 'whale', busy: whaleBusy, error: error !== '' }) : null,
     h('div', { key: 'header', style: memoryStyles.header }, [
       h('h2', { key: 'title', style: memoryStyles.title }, '记忆控制台'),
       h('span', { key: 'count', style: memoryStyles.count },
@@ -1706,9 +1751,9 @@ function MemoryExplorerPage() {
               h('span', { style: memoryStyles.billingLabel }, '运行次数'),
               h('span', { style: memoryStyles.billingValue }, `今日 ${billing.todayRuns} 次 · 累计 ${billing.totalRuns} 次`),
             ]),
-            billing.disciplineBreakdown.length === 0 ? null : h('div', { key: 'r4', style: memoryStyles.billingRow }, [
+            (billing.disciplineBreakdown ?? []).length === 0 ? null : h('div', { key: 'r4', style: memoryStyles.billingRow }, [
               h('span', { style: memoryStyles.billingLabel }, '学科分布'),
-              h('span', { style: memoryStyles.billingValue }, billing.disciplineBreakdown
+              h('span', { style: memoryStyles.billingValue }, (billing.disciplineBreakdown ?? [])
                 .slice(0, 5)
                 .map((entry: Billing['disciplineBreakdown'][number]) => `${entry.discipline} ${entry.tokens}t`)
                 .join(' · ')),
@@ -1856,13 +1901,22 @@ function MemoryExplorerPage() {
             animationTimingFunction: 'ease-in-out',
             animationIterationCount: 'infinite',
           }
-          : staged
+          : item.type === 'extraction_strategy'
             ? {
               ...memoryStyles.card,
-              borderColor: '#d97706',
-              backgroundColor: 'rgba(217, 119, 6, 0.10)',
+              borderColor: item.rule === true ? '#0891b2' : '#0e7490',
+              ...(item.rule === true ? { borderWidth: '2px' } : {}),
+              backgroundColor: item.status === 'approved'
+                ? 'rgba(8, 145, 178, 0.06)'
+                : 'rgba(8, 145, 178, 0.12)',
             }
-            : item.status === 'rejected'
+            : staged
+              ? {
+                ...memoryStyles.card,
+                borderColor: '#d97706',
+                backgroundColor: 'rgba(217, 119, 6, 0.10)',
+              }
+              : item.status === 'rejected'
               ? { ...memoryStyles.card, opacity: 0.65 }
               : speculative
                 ? {
@@ -1879,16 +1933,7 @@ function MemoryExplorerPage() {
                     borderColor: '#9333ea',
                     backgroundColor: 'rgba(147, 51, 234, 0.07)',
                   }
-                  : item.type === 'extraction_strategy'
-                    ? {
-                      ...memoryStyles.card,
-                      borderColor: item.rule === true ? '#0891b2' : '#0e7490',
-                      ...(item.rule === true ? { borderWidth: '2px' } : {}),
-                      backgroundColor: item.status === 'approved'
-                        ? 'rgba(8, 145, 178, 0.06)'
-                        : 'rgba(8, 145, 178, 0.12)',
-                    }
-                    : busy
+                  : busy
                     ? {
                       ...memoryStyles.card,
                       borderColor: '#2563eb',
@@ -1934,6 +1979,17 @@ function MemoryExplorerPage() {
                 ? { ...memoryStyles.content, fontSize: CARD_DENSITY[density as keyof typeof CARD_DENSITY].fontSize }
                 : { ...memoryStyles.content, ...memoryStyles.contentClamp, fontSize: CARD_DENSITY[density as keyof typeof CARD_DENSITY].fontSize },
             }, item.content),
+            item.type === 'extraction_strategy'
+              ? h('div', { key: 'strategy-brief', style: memoryStyles.strategyBrief }, [
+                item.rule === true
+                  ? '跨域映射法则'
+                  : item.strategyStage === 'small'
+                    ? '小提炼反思'
+                    : item.strategyStage === 'large' ? '大提炼反思' : '提炼策略',
+                item.thinkingModel === undefined ? '' : ` · ${item.thinkingModel}`,
+                ` · 成功 ${item.successCount ?? 0} 次 / 被注入 ${item.appliedCount ?? 0} 次`,
+              ].join(''))
+              : null,
             activeTab === 'audit'
               ? (() => {
                 const verdict = auditItem(item)
@@ -2185,6 +2241,17 @@ function MemoryExplorerPage() {
                 disabled: true,
               }, '思考中…')
               : null,
+            item.type === 'skill_error_fix' && !busy && item.status !== 'rejected'
+              && draftOf(item).trim() !== ''
+              && draftOf(item).trim() !== (item.resolution ?? '')
+              ? h('button', {
+                key: 'save-resolution',
+                type: 'button',
+                style: memoryStyles.save,
+                disabled: saving === item.id,
+                onClick: () => { void saveOnly(item) },
+              }, saving === item.id ? '保存中…' : '保存解决办法')
+              : null,
             !human && !busy && (staged || speculative)
               ? h('button', {
                 key: 'approve',
@@ -2200,7 +2267,7 @@ function MemoryExplorerPage() {
                 type: 'button',
                 style: memoryStyles.delete,
                 disabled: deleting === item.id,
-                onClick: () => { void remove(item.id) },
+                onClick: () => { void remove(item) },
               }, deleting === item.id ? '丢弃中…' : '丢弃')
               : null,
             (item.status === 'approved' || item.status === 'rejected')
@@ -2209,7 +2276,7 @@ function MemoryExplorerPage() {
                 type: 'button',
                 style: memoryStyles.delete,
                 disabled: deleting === item.id,
-                onClick: () => { void remove(item.id) },
+                onClick: () => { void remove(item) },
               }, deleting === item.id ? '删除中…' : '删除')
               : null,
           ]),

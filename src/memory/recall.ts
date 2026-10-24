@@ -33,6 +33,7 @@ export interface MemoryRecallContext extends MemoryContextBase {
     context(definition: {
       name: string
       order: number
+      interpolate?: boolean
       text: (context: { agent?: object }) => string
     }): () => void
   }
@@ -235,6 +236,7 @@ export function registerMemoryRecall(ctx: MemoryRecallContext, store: MemoryStor
       ctx.effect(() => systemPrompt.context({
         name: 'memory:skill-recall',
         order: 90,
+        interpolate: false,
         text: (context) => {
           const agent = context.agent
           if (typeof agent !== 'object' || agent === null) return ''
@@ -250,6 +252,7 @@ export function registerMemoryRecall(ctx: MemoryRecallContext, store: MemoryStor
       ctx.effect(() => systemPrompt.context({
         name: 'memory:digest',
         order: 80,
+        interpolate: false,
         text: (context) => {
           const agent = context.agent
           if (typeof agent !== 'object' || agent === null) return ''

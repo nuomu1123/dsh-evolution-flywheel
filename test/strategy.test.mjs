@@ -142,6 +142,13 @@ test('融合解析：把序号映射回策略 id', () => {
   assert.equal(merged?.rule, '先抽象为系统韧性，再跨域映射')
   assert.deepEqual(merged?.sourceIds, ['s1', 's3'])
   assert.equal(parseStrategyMerge('{"rationale":"没有法则"}', strategies), undefined)
+
+  // LLM 偶尔把序号写成字符串，也要能映射。
+  const stringIndexed = parseStrategyMerge(
+    '{"rule":"字符串序号法则","rationale":"r","appliesTo":"a","sourceIds":["1","2"]}',
+    strategies,
+  )
+  assert.deepEqual(stringIndexed?.sourceIds, ['s1', 's2'])
 })
 
 test('reflectAndStore：后置反思入库为 suggested 策略，保留四要素', async () => {
@@ -351,6 +358,9 @@ test('前端方法论库：筛选、计数、标签与审计', () => {
   assert.equal(originLabel('strategy-merge'), '策略融合')
   assert.equal(matchesFilter(strategy, 'strategy', ''), true)
   assert.equal(matchesFilter(strategy, 'strategy', '系统韧性'), true)
+  assert.equal(matchesFilter({ ...strategy, rule: true }, 'strategy', '跨域映射法则'), true)
+  assert.equal(matchesFilter({ ...strategy, resolution: '修正路径后重试' }, 'strategy', '修正路径'), true)
+  assert.equal(matchesFilter({ ...strategy, trace: ['第 1 次被注入'] }, 'strategy', '被注入'), true)
   assert.equal(matchesFilter(strategy, 'model', ''), false)
 
   const counts = tabCounts([strategy, rule])

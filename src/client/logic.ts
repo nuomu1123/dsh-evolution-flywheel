@@ -188,17 +188,29 @@ export function matchesFilter(item: MemoryItem, tab: FilterTab, keyword: string)
     || tab === 'audit'
   if (!tabMatch) return false
   if (keyword === '') return true
-  return item.content.toLowerCase().includes(keyword)
-    || memoryTypeLabel(item.type).includes(keyword)
-    || memoryStatusLabel(item.status).includes(keyword)
-    || item.createdAt.toLowerCase().includes(keyword)
-    || originLabel(item.origin).includes(keyword)
-    || (item.discipline ?? '').toLowerCase().includes(keyword)
-    || (item.topic ?? '').toLowerCase().includes(keyword)
-    || (item.thinkingModel ?? '').toLowerCase().includes(keyword)
-    || (item.analogyReason ?? '').toLowerCase().includes(keyword)
-    || (item.effectiveFor ?? '').toLowerCase().includes(keyword)
-    || (item.sources ?? []).some(source => source.toLowerCase().includes(keyword))
+  return [
+    item.content,
+    memoryTypeLabel(item.type),
+    memoryStatusLabel(item.status),
+    item.createdAt,
+    originLabel(item.origin),
+    item.discipline ?? '',
+    item.topic ?? '',
+    item.thinkingModel ?? '',
+    item.analogyReason ?? '',
+    item.effectiveFor ?? '',
+    item.resolution ?? '',
+    item.errorSignature ?? '',
+    item.context ?? '',
+    item.reviewReason ?? '',
+    item.debateSummary ?? '',
+    item.challenge ?? '',
+    item.strategyStage ?? '',
+    item.rule === true ? '跨域映射法则 融合法则' : '',
+    (item.mergedFrom ?? []).join(' '),
+    ...(item.trace ?? []),
+    ...(item.sources ?? []),
+  ].some(text => text.toLowerCase().includes(keyword))
 }
 
 export interface AuditVerdict {

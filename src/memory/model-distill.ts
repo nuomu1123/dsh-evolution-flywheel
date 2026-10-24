@@ -9,6 +9,7 @@
  * 只生成 suggested 记录；是否采纳仍由人类裁决。
  */
 import type { MemoryContextBase } from './context.js'
+import { readBudget } from './budget.js'
 import { complete } from './review-driver.js'
 import { sanitizeText } from './sanitize.js'
 import type { StrategyHooks } from './strategy.js'
@@ -124,16 +125,25 @@ export async function distillModel(
 
   const outcome: DistillOutcome = { item: saved }
   if (hooks !== undefined) {
-    const disciplines = [...new Set(seeds.map(item => item.discipline).filter((value): value is string => value !== undefined))]
-    const strategy = await hooks.reflect({
-      stage: 'large',
-      task: `大提炼：合并 ${seeds.length} 条跨学科洞察（学科：${disciplines.join(' / ') || '未记录'}）`,
-      outcome: `生成思维模型：${model.name}｜机制：${model.pattern}｜适用：${model.appliesTo}`,
-    })
-    if (strategy !== undefined) outcome.strategy = strategy
-    if (hooks.merge !== undefined) {
-      const rule = await hooks.merge()
-      if (rule !== undefined) outcome.rule = rule
+    // 策略反思与融合也消耗 LLM；预算耗尽时只保留模型结果。
+    let budgetExceeded = false
+    try {
+      budgetExceeded = (await readBudget(store)).exceeded
+    } catch {
+      // 预算读取失败不阻塞已经生成的模型。
+    }
+    if (!budgetExceeded) {
+      const disciplines = [...new Set(seeds.map(item => item.discipline).filter((value): value is string => value !== undefined))]
+      const strategy = await hooks.reflect({
+        stage: 'large',
+        task: `大提炼：合并 ${seeds.length} 条跨学科洞察（学科：${disciplines.join(' / ') || '未记录'}）`,
+        outcome: `生成思维模型：${model.name}｜机制：${model.pattern}｜适用：${model.appliesTo}`,
+      })
+      if (strategy !== undefined) outcome.strategy = strategy
+      if (hooks.merge !== undefined) {
+        const rule = await hooks.merge()
+        if (rule !== undefined) outcome.rule = rule
+      }
     }
   }
   return outcome

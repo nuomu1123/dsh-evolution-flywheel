@@ -27,7 +27,7 @@ const MEMORY_ITEM_SCHEMA = {
     resolution: { type: 'string' },
   },
   required: ['id', 'content', 'type', 'status', 'createdAt'],
-  additionalProperties: false,
+  additionalProperties: true,
 }
 
 function renderJson(_args: unknown, value: unknown): Array<{ type: 'text'; text: string }> {

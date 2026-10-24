@@ -2,7 +2,7 @@
 
 > 不是又一个记忆库，而是一个会怀疑自己、会跟自己对账、会在半夜查文献的元认知系统。
 
-**1.0.0 · MIT · 102 项测试 · 单包 DSH 插件 · 本地优先**
+**1.0.0 · MIT · 104 项测试 · 单包 DSH 插件 · 本地优先**
 
 ## 一个真实的故事
 
@@ -270,6 +270,8 @@ pnpm dsh plugin --profile web add .
 ```
 
 重启 DSH 后，在 **设置 → 记忆管理** 或侧边栏 **记忆** 中打开面板。
+
+> **不要与 `dsh-memory-minimal` 同时启用**：两者默认写同一个 `$DSH_HOME/storages/dsh-memory-minimal/memories.jsonl`，同时加载会互相覆盖。挂载本插件前，先从 profile 中移除旧插件。
 
 ---
 
