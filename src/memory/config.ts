@@ -24,7 +24,7 @@ export const memoryConfig = {
   /** 喂给模型的外部证据条数上限。 */
   dmaEvidenceLimit: envInt('DSH_DMA_EVIDENCE_LIMIT', 3, 1, 5),
   /** 子母审阅/辩论单次输出上限。 */
-  reviewMaxTokens: envInt('DSH_MEMORY_REVIEW_MAX_TOKENS', 300, 100, 1_000),
+  reviewMaxTokens: envInt('DSH_MEMORY_REVIEW_MAX_TOKENS', 500, 100, 1_000),
   /** 对抗辩论单次输出上限（含逐轮发言）。 */
   debateMaxTokens: envInt('DSH_MEMORY_DEBATE_MAX_TOKENS', 900, 200, 2_000),
 } as const
