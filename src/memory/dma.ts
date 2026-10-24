@@ -529,6 +529,15 @@ export class DmaRunner {
           ...(exploration.discipline !== undefined ? { discipline: exploration.discipline } : {}),
           runId,
           ...(exploration.tokensUsed !== undefined ? { tokensUsed: exploration.tokensUsed } : {}),
+          origin: 'dma',
+          originDetail: exploration.discipline ?? disciplineKey ?? '跨学科',
+          trace: [
+            `学科：${exploration.discipline ?? disciplineKey ?? '跨学科'}`,
+            `主题：${exploration.topic ?? exploration.title}`,
+            `来源：${(exploration.sources ?? []).slice(0, 3).join(' | ') || '无'}`,
+            `洞察数：${exploration.insights.length}`,
+            `Token：${exploration.tokensUsed ?? 0}`,
+          ],
         })
         if (item !== undefined) {
           items.push(item)

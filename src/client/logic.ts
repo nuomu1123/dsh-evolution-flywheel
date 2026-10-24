@@ -32,6 +32,9 @@ export interface MemoryItem {
   debateSummary?: string
   metaInsight?: string
   counterexample?: string
+  origin?: string
+  originDetail?: string
+  trace?: string[]
   humanDecision?: 'adopt' | 'discard'
   challenge?: string
   debateRounds?: DebateRound[]
@@ -57,6 +60,23 @@ export function memoryTypeLabel(type: MemoryItem['type']): string {
   if (type === 'meta_insight') return '元认知洞察'
   if (type === 'mental_model') return '思维模型'
   return type === 'fact' ? '事实' : '偏好'
+}
+
+/** 把 ISO 时间格式化为可读的本地时间标签。 */
+export function formatMemoryTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const pad = (part: number): string => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/** 来源标签；旧数据没有 origin 时回退到本地记忆。 */
+export function originLabel(origin?: string): string {
+  if (origin === 'error-capture') return '错误捕获'
+  if (origin === 'dma') return '跨学科漫游'
+  if (origin === 'model-distill') return '模型提炼'
+  if (origin === 'manual') return '手动记录'
+  return '本地记忆'
 }
 
 export function memoryStatusLabel(status: MemoryItem['status']): string {
@@ -155,6 +175,11 @@ export function matchesFilter(item: MemoryItem, tab: FilterTab, keyword: string)
   return item.content.toLowerCase().includes(keyword)
     || memoryTypeLabel(item.type).includes(keyword)
     || memoryStatusLabel(item.status).includes(keyword)
+    || item.createdAt.toLowerCase().includes(keyword)
+    || originLabel(item.origin).includes(keyword)
+    || (item.discipline ?? '').toLowerCase().includes(keyword)
+    || (item.topic ?? '').toLowerCase().includes(keyword)
+    || (item.sources ?? []).some(source => source.toLowerCase().includes(keyword))
 }
 
 export interface AuditVerdict {

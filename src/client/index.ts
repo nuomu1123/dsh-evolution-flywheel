@@ -19,6 +19,7 @@ import {
   debateVerdictText,
   hasDebateRecord,
   isMetaItem,
+  originLabel,
   matchesFilter,
   auditItem,
   auditSummary,
@@ -591,6 +592,33 @@ const memoryStyles = {
     WebkitLineClamp: 2,
     WebkitBoxOrient: 'vertical',
     overflow: 'hidden',
+  },
+  provenance: {
+    fontSize: '10px',
+    opacity: 0.6,
+    lineHeight: 1.5,
+    marginBottom: '4px',
+    overflowWrap: 'anywhere',
+  },
+  traceBox: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '3px',
+    border: '1px dashed rgba(37, 99, 235, 0.35)',
+    borderRadius: '8px',
+    padding: '7px 9px',
+    background: 'rgba(37, 99, 235, 0.04)',
+    fontSize: '11px',
+    lineHeight: 1.55,
+  },
+  traceTitle: {
+    color: '#2563eb',
+    fontWeight: 700,
+    fontSize: '11px',
+  },
+  traceStep: {
+    opacity: 0.78,
+    overflowWrap: 'anywhere',
   },
   detailLink: {
     alignSelf: 'flex-start',
@@ -1859,6 +1887,8 @@ function MemoryExplorerPage() {
 
         return h('div', { key: item.id, style: cardStyle }, [
           h('div', { key: 'main', style: memoryStyles.itemMain }, [
+            h('div', { key: 'provenance', style: memoryStyles.provenance },
+              `创建 ${formatMemoryTime(item.createdAt)} · 来源 ${originLabel(item.origin)}${item.discipline === undefined ? '' : ` · ${item.discipline}`}`),
             h('div', {
               key: 'content',
               style: isExpanded
@@ -1905,10 +1935,13 @@ function MemoryExplorerPage() {
                 item.topic !== undefined ? `话题：${item.topic}` : null,
               ].filter(Boolean).join('\n'))
               : null,
-            isExpanded && item.metaInsight !== undefined
-              ? h('div', { key: 'meta-insight', style: memoryStyles.metaInsight }, [
-                h('div', { key: 'title', style: memoryStyles.metaInsightTitle }, '元认知结论 · meta_insight'),
-                h('div', { key: 'text' }, item.metaInsight),
+            isExpanded && item.trace !== undefined && item.trace.length > 0
+              ? h('div', { key: 'trace', style: memoryStyles.traceBox }, [
+                h('div', { key: 'title', style: memoryStyles.traceTitle }, '提炼过程'),
+                ...item.trace.map((step, index) => h('div', {
+                  key: `trace-${index}`,
+                  style: memoryStyles.traceStep,
+                }, `${index + 1}. ${step}`)),
               ])
               : null,
             isExpanded && item.type === 'skill_error_fix'
@@ -2041,7 +2074,7 @@ function MemoryExplorerPage() {
                 style: memoryStyles.save,
                 onClick: () => {
                   setActiveTab('debate')
-                  setExpanded((previous: Record<string, boolean>) => ({ ...previous, [item.id]: true }))
+                  setDetailId(item.id)
                 },
               }, '去辩论空间')
               : null,

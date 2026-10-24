@@ -60,6 +60,12 @@ export interface MemoryRecord {
   metaInsight?: string
   /** 思维模型的适用边界/反例。 */
   counterexample?: string
+  /** 记忆来源：error-capture / dma / model-distill / manual。 */
+  origin?: string
+  /** 来源细节：工具、学科、会话等。 */
+  originDetail?: string
+  /** 提炼/写入过程，按步骤记录。 */
+  trace?: string[]
   /** 辩论轮次（本实现固定 1 轮）。 */
   reviewRound?: number
   /** 人类圣裁结果。 */
@@ -199,6 +205,11 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
     ...(Array.isArray(value.debateRounds) ? { debateRounds: normalizeDebateRounds(value.debateRounds) } : {}),
     ...(typeof value.metaInsight === 'string' ? { metaInsight: sanitizeQuiet(value.metaInsight, 100) } : {}),
     ...(typeof value.counterexample === 'string' ? { counterexample: sanitizeQuiet(value.counterexample, 500) } : {}),
+    ...(typeof value.origin === 'string' ? { origin: sanitizeQuiet(value.origin, 60) } : {}),
+    ...(typeof value.originDetail === 'string' ? { originDetail: sanitizeQuiet(value.originDetail, 300) } : {}),
+    ...(Array.isArray(value.trace)
+      ? { trace: value.trace.filter((step): step is string => typeof step === 'string').slice(0, 10) }
+      : {}),
     ...(typeof value.reviewRound === 'number' ? { reviewRound: value.reviewRound } : {}),
     ...(value.humanDecision === 'adopt' || value.humanDecision === 'discard'
       ? { humanDecision: value.humanDecision }
@@ -350,6 +361,13 @@ export class MemoryStore {
         ...(resolution !== undefined && resolution !== ''
           ? { resolution }
           : {}),
+        origin: 'error-capture',
+        originDetail: '工具错误',
+        trace: [
+          '工具错误捕获',
+          `指纹：${fingerprint.slice(0, 80)}`,
+          `上下文：${context.slice(0, 120)}`,
+        ],
       }
       await this.writeAll([record, ...items])
       return { item: record, created: true }
@@ -430,6 +448,11 @@ export class MemoryStore {
         ...(Array.isArray(patch.debateRounds) ? { debateRounds: normalizeDebateRounds(patch.debateRounds) } : {}),
         ...(patch.metaInsight !== undefined ? { metaInsight: clampMetaInsight(patch.metaInsight) } : {}),
         ...(patch.counterexample !== undefined ? { counterexample: sanitize(patch.counterexample, 500) } : {}),
+        ...(patch.origin !== undefined ? { origin: sanitize(patch.origin, 60) } : {}),
+        ...(patch.originDetail !== undefined ? { originDetail: sanitize(patch.originDetail, 300) } : {}),
+        ...(Array.isArray(patch.trace)
+          ? { trace: patch.trace.filter((step): step is string => typeof step === 'string').slice(0, 10) }
+          : {}),
         ...(patch.topic !== undefined ? { topic: sanitize(patch.topic, 300) } : {}),
         ...(patch.discipline !== undefined ? { discipline: sanitize(patch.discipline, 120) } : {}),
         ...(Array.isArray(patch.sources)
@@ -477,6 +500,9 @@ export class MemoryStore {
     sources?: readonly string[]
     runId?: string
     tokensUsed?: number
+    origin?: string
+    originDetail?: string
+    trace?: readonly string[]
   }): Promise<MemoryRecord | undefined> {
     const title = sanitize(input.title, 120)
     const insight = sanitize(input.insight, 2000)
@@ -507,6 +533,16 @@ export class MemoryStore {
           ? { runId: input.runId.trim().slice(0, 100) }
           : {}),
         ...(input.tokensUsed !== undefined ? { tokensUsed: input.tokensUsed } : {}),
+        origin: input.origin ?? 'dma',
+        ...(input.originDetail !== undefined ? { originDetail: sanitize(input.originDetail, 300) } : {}),
+        ...(input.trace !== undefined && input.trace.length > 0
+          ? {
+            trace: input.trace
+              .map(step => sanitize(step, 200))
+              .filter(step => step !== '')
+              .slice(0, 10),
+          }
+          : {}),
       }
       await this.writeAll([record, ...items])
       return record

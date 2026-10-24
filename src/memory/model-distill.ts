@@ -83,5 +83,14 @@ export async function distillModel(
     discipline: model.sourceDisciplines,
     sources: ['model-distill'],
     tokensUsed: completion.tokensUsed,
+    origin: 'model-distill',
+    originDetail: `基于 ${seeds.length} 条 meta_insight`,
+    trace: [
+      `读取 ${seeds.length} 条 meta_insight`,
+      `来源学科：${[...new Set(seeds.map(item => item.discipline).filter((value): value is string => value !== undefined))].join(' / ') || '未记录'}`,
+      `模型：${model.name}`,
+      `机制：${model.pattern}`,
+      `LLM 输出：${completion.text.slice(0, 200)}`,
+    ],
   })
 }

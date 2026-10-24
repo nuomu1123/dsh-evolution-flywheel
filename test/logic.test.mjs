@@ -8,7 +8,9 @@ import {
   hasDebateRecord,
   matchesFilter,
   auditItem,
+  formatMemoryTime,
   memoryStatusLabel,
+  originLabel,
   memoryTypeLabel,
   normalizeMemoryStatus,
   tabCounts,
@@ -144,4 +146,20 @@ test('状态标签与未知状态兜底', () => {
   assert.equal(normalizeMemoryStatus('debating'), 'debating')
   assert.equal(normalizeMemoryStatus(''), 'suggested')
   assert.equal(normalizeMemoryStatus(42), 'suggested')
+})
+
+test('时间与来源标签可被搜索', () => {
+  const traced = item({
+    type: 'mental_model',
+    status: 'approved',
+    content: '反馈回路',
+    origin: 'model-distill',
+    discipline: '生物学',
+    createdAt: '2026-10-24T10:30:00.000Z',
+  })
+  assert.equal(originLabel('model-distill'), '模型提炼')
+  assert.match(formatMemoryTime(traced.createdAt), /^2026-10-24/u)
+  assert.equal(matchesFilter(traced, 'all', '模型提炼'), true)
+  assert.equal(matchesFilter(traced, 'all', '2026-10-24'), true)
+  assert.equal(matchesFilter(traced, 'all', '生物学'), true)
 })

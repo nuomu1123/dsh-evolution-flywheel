@@ -656,3 +656,20 @@ test('mental_model 可持久化并保留反例', async () => {
     assert.equal(found?.counterexample, '不要把一切都说成反馈回路')
   })
 })
+
+test('记忆可持久化来源与提炼过程', async () => {
+  await withStore(async (store, dir) => {
+    const created = await store.appendSuggested('来源测试', 'fact')
+    assert.ok(created)
+    const updated = await store.update(created.id, {
+      origin: 'dma',
+      originDetail: '生物学',
+      trace: ['学科：生物学', '来源：example.org'],
+    })
+    assert.equal(updated?.origin, 'dma')
+    const reopened = new MemoryStore(dir)
+    const found = (await reopened.list()).find(item => item.id === created.id)
+    assert.equal(found?.originDetail, '生物学')
+    assert.deepEqual(found?.trace, ['学科：生物学', '来源：example.org'])
+  })
+})
