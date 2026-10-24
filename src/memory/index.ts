@@ -30,8 +30,9 @@ export type { MemoryRecord, MemoryStatus, MemoryType } from './store.js'
 
 /** 注册工具、HTTP API、SSE、提取、错误感知、冲突自检与召回。 */
 export function registerMemoryFeatures(ctx: MemoryHostContext): void {
-  const store = new MemoryStore()
   const events = new MemoryEventHub()
+  // 共享世界模型：任何写入都立即广播，母子 Agent 与 Web 面板共享同一现实。
+  const store = new MemoryStore(undefined, event => events.publish(event))
   const strategyHooks = createStrategyHooks(ctx, store)
   const reviewEngine = new SkillReviewEngine(
     store,

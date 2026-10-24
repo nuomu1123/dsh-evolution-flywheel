@@ -83,6 +83,8 @@ export interface MemoryRecord {
   debateTokens?: number
   /** 本次探索消耗的 token。 */
   tokensUsed?: number
+  /** 共享世界模型作用域：global=统一记忆池（默认）；main/sub 预留给未来分区。 */
+  scope?: 'global' | 'main' | 'sub'
   /** 提炼策略：本次提炼使用的思维模型（例如“系统韧性”“反馈回路”）。 */
   thinkingModel?: string
   /** 提炼策略：为什么这样类比（跨域映射的推理依据）。 */
@@ -106,6 +108,14 @@ export interface MemoryRecord {
   /** 提炼策略：模型自评置信度（0-1）。 */
   confidence?: number
 }
+
+/** 共享世界模型的变更事件：任何 Agent 写入后立即广播，保证秒级同步。 */
+export type SharedWorldEvent =
+  | { type: 'memory:added'; item: MemoryRecord }
+  | { type: 'memory:updated'; item: MemoryRecord }
+  | { type: 'memory:removed'; id: string }
+
+export type SharedWorldListener = (event: SharedWorldEvent) => void
 
 const MAX_FILE_BYTES = 1024 * 1024
 const MAX_CONTENT_CHARS = 2000
@@ -250,6 +260,9 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
     ...(typeof value.reviewTokens === 'number' ? { reviewTokens: value.reviewTokens } : {}),
     ...(typeof value.debateTokens === 'number' ? { debateTokens: value.debateTokens } : {}),
     ...(typeof value.tokensUsed === 'number' ? { tokensUsed: value.tokensUsed } : {}),
+    ...(value.scope === 'global' || value.scope === 'main' || value.scope === 'sub'
+      ? { scope: value.scope }
+      : { scope: 'global' }),
     ...(typeof value.thinkingModel === 'string' ? { thinkingModel: sanitizeQuiet(value.thinkingModel, 120) } : {}),
     ...(typeof value.analogyReason === 'string' ? { analogyReason: sanitizeQuiet(value.analogyReason, 500) } : {}),
     ...(typeof value.effectiveFor === 'string' ? { effectiveFor: sanitizeQuiet(value.effectiveFor, 300) } : {}),
@@ -294,8 +307,18 @@ export class MemoryStore {
   private queue: Promise<unknown> = Promise.resolve()
   private readonly writes = new WriteQueue()
 
-  constructor(dataDir: string = defaultDataDir()) {
+  constructor(dataDir: string = defaultDataDir(), private readonly notify?: SharedWorldListener) {
     this.file = join(dataDir, 'memories.jsonl')
+  }
+
+  /** 向共享世界模型广播一次变更；监听器异常不得影响落盘。 */
+  private emit(event: SharedWorldEvent): void {
+    if (this.notify === undefined) return
+    try {
+      this.notify(event)
+    } catch (error) {
+      console.error('[dsh-evolution-flywheel] shared world broadcast failed:', error)
+    }
   }
 
   get writeQueueBusy(): boolean {
@@ -329,8 +352,10 @@ export class MemoryStore {
         type,
         status: 'suggested',
         createdAt: new Date().toISOString(),
+        scope: 'global',
       }
       await this.writeAll([record, ...items])
+      this.emit({ type: 'memory:added', item: record })
       return record
     })
   }
@@ -361,6 +386,7 @@ export class MemoryStore {
       const next = [...items]
       next[index] = updated
       await this.writeAll(next)
+      this.emit({ type: 'memory:updated', item: updated })
       return updated
     })
   }
@@ -397,6 +423,7 @@ export class MemoryStore {
         const next = [...items]
         next[index] = updated
         await this.writeAll(next)
+        this.emit({ type: 'memory:updated', item: updated })
         return { item: updated, created: false }
       }
       const record: MemoryRecord = {
@@ -422,6 +449,7 @@ export class MemoryStore {
         ],
       }
       await this.writeAll([record, ...items])
+      this.emit({ type: 'memory:added', item: record })
       return { item: record, created: true }
     })
   }
@@ -445,6 +473,7 @@ export class MemoryStore {
       const next = [...items]
       next[index] = updated
       await this.writeAll(next)
+      this.emit({ type: 'memory:updated', item: updated })
       return updated
     })
   }
@@ -466,6 +495,7 @@ export class MemoryStore {
       const next = [...items]
       next[index] = updated
       await this.writeAll(next)
+      this.emit({ type: 'memory:updated', item: updated })
       return updated
     })
   }
@@ -538,6 +568,7 @@ export class MemoryStore {
       const next = [...items]
       next[index] = updated
       await this.writeAll(next)
+      this.emit({ type: 'memory:updated', item: updated })
       return updated
     })
   }
@@ -565,7 +596,10 @@ export class MemoryStore {
         touched.push(updated)
         return updated
       })
-      if (touched.length > 0) await this.writeAll(next)
+      if (touched.length > 0) {
+        await this.writeAll(next)
+        for (const item of touched) this.emit({ type: 'memory:updated', item })
+      }
       return touched
     })
   }
@@ -642,6 +676,7 @@ export class MemoryStore {
           : {}),
       }
       await this.writeAll([record, ...items])
+      this.emit({ type: 'memory:added', item: record })
       return record
     })
   }
@@ -656,6 +691,7 @@ export class MemoryStore {
       const next = items.filter(item => item.id !== key)
       if (next.length === items.length) return false
       await this.writeAll(next)
+      this.emit({ type: 'memory:removed', id: key })
       return true
     })
   }

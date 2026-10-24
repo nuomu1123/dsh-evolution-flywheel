@@ -205,6 +205,44 @@ test('HTTP API 支持 list、resolution、approve 与 delete', async () => {
   })
 })
 
+test('共享世界模型：写入即广播，scope 默认 global', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-shared-world-'))
+  const events = []
+  const store = new MemoryStore(dir, event => events.push(event))
+  try {
+    const created = await store.appendSuggested('共享事实：母子看到同一个现实', 'fact')
+    assert.ok(created)
+    assert.equal(created.scope, 'global')
+    assert.equal(events[0]?.type, 'memory:added')
+    assert.equal(events[0]?.item.id, created.id)
+
+    const approved = await store.approve(created.id)
+    assert.equal(approved?.status, 'approved')
+    assert.equal(events[1]?.type, 'memory:updated')
+    assert.equal(events[1]?.item.status, 'approved')
+
+    await store.delete(created.id)
+    assert.equal(events[2]?.type, 'memory:removed')
+    assert.equal(events[2]?.id, created.id)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('共享世界模型：子 Agent 写入的经验，母 Agent 立即能读到', async () => {
+  await withStore(async (store) => {
+    const captured = await store.captureSkillError({
+      errorSignature: 'Error: 子 Agent 的局部探索',
+      context: '离线漫游任务',
+      resolution: '共享给母 Agent 的解决办法',
+      fingerprint: 'fp-shared-world',
+    })
+    assert.ok(captured)
+    const visible = (await store.list()).find(item => item.id === captured.item.id)
+    assert.equal(visible?.resolution, '共享给母 Agent 的解决办法')
+  })
+})
+
 test('HTTP API /reject 把策略置为 rejected 且保留记录', async () => {
   await withStore(async (store) => {
     const events = new MemoryEventHub()

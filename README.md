@@ -217,6 +217,13 @@ flowchart LR
 
 数据仍在同一个 `memories.jsonl`，不新增文件；策略融合只写入候选，不会自动覆盖核心规则。
 
+### Shared Reality：共享世界模型
+
+- 所有记忆写入同一个统一记忆池（`scope: 'global'`），母子 Agent 没有信息孤岛；
+- 子 Agent 的局部探索写入，母 Agent 下一次初审/辩论立即可见；母 Agent 的裁决也回写同一池子；
+- `MemoryStore` 每次成功写入后立即广播 `memory:added / updated / removed`，Web 面板通过 SSE 秒级同步；
+- 子 Agent 在漫游中沉淀的提炼策略，下一轮对抗会自动注入，实现协同进化。
+
 ---
 
 ## 状态机
