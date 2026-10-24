@@ -153,6 +153,7 @@ test('reflectAndStore：后置反思入库为 suggested 策略，保留四要素
         analogyReason: '错误是压力源，系统会吸收或崩溃',
         effectiveFor: '工具报错与测试失败类材料',
         confidence: 0.82,
+        tokensUsed: 7,
       }),
       merge: async () => undefined,
     }
@@ -169,6 +170,7 @@ test('reflectAndStore：后置反思入库为 suggested 策略，保留四要素
     assert.match(created?.analogyReason ?? '', /压力源/)
     assert.match(created?.effectiveFor ?? '', /工具报错/)
     assert.equal(created?.confidence, 0.82)
+    assert.equal(created?.reviewTokens, 7)
     assert.ok((created?.trace ?? []).some(step => step.includes('思维模型')))
 
     // 同名策略不重复写入。
@@ -255,6 +257,7 @@ test('大提炼的策略融合：3 条策略融合为法则候选，裁决后进
         rationale: '压力源与容错结构在生物和软件中同构',
         appliesTo: '架构评审与故障复盘',
         sourceIds: strategies.map(item => item.id).slice(0, 3),
+        tokensUsed: 12,
       }),
     }
     const rule = await mergeStrategyLibrary(store, reflector)
@@ -263,6 +266,7 @@ test('大提炼的策略融合：3 条策略融合为法则候选，裁决后进
     assert.equal(rule?.strategyStage, 'merge')
     assert.equal(rule?.status, 'suggested')
     assert.equal(rule?.mergedFrom?.length, 3)
+    assert.equal(rule?.reviewTokens, 12)
     assert.equal(originLabel(rule?.origin ?? ''), '策略融合')
 
     // 少于 3 条时不再融合。

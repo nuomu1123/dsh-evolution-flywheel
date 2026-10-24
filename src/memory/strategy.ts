@@ -38,6 +38,8 @@ export interface StrategyReflection {
   effectiveFor: string
   /** 模型自评置信度 0-1。 */
   confidence: number
+  /** 本次反思消耗的 token，计入 Token 账单。 */
+  tokensUsed?: number
 }
 
 export interface StrategyContext {
@@ -53,6 +55,8 @@ export interface StrategyMerge {
   rationale: string
   appliesTo: string
   sourceIds: string[]
+  /** 本次融合消耗的 token，计入 Token 账单。 */
+  tokensUsed?: number
 }
 
 export interface StrategyReflector {
@@ -235,7 +239,9 @@ export function createLlmStrategyReflector(ctx: MemoryContextBase): StrategyRefl
         prompt,
         400,
       )
-      return parseStrategyReflection(completion.text)
+      const reflection = parseStrategyReflection(completion.text)
+      if (reflection === undefined) return undefined
+      return { ...reflection, tokensUsed: completion.tokensUsed }
     },
 
     async merge(strategies: readonly MemoryRecord[]): Promise<StrategyMerge | undefined> {
@@ -262,7 +268,9 @@ export function createLlmStrategyReflector(ctx: MemoryContextBase): StrategyRefl
         prompt,
         500,
       )
-      return parseStrategyMerge(completion.text, strategies)
+      const merged = parseStrategyMerge(completion.text, strategies)
+      if (merged === undefined) return undefined
+      return { ...merged, tokensUsed: completion.tokensUsed }
     },
   }
 }
@@ -294,6 +302,7 @@ export async function reflectAndStore(
       confidence: reflection.confidence,
       origin: 'strategy-reflection',
       originDetail: stageLabel(input.stage),
+      ...(reflection.tokensUsed !== undefined ? { reviewTokens: reflection.tokensUsed } : {}),
       trace: [
         `阶段：${stageLabel(input.stage)}`,
         `任务：${input.task.slice(0, 120)}`,
@@ -346,6 +355,7 @@ export async function mergeStrategyLibrary(
       confidence: 0.7,
       origin: 'strategy-merge',
       originDetail: `融合 ${merged.sourceIds.length} 条策略`,
+      ...(merged.tokensUsed !== undefined ? { reviewTokens: merged.tokensUsed } : {}),
       trace: [
         `融合来源 ${strategies.length} 条策略：${strategies.map(item => item.content.slice(0, 40)).join(' / ')}`,
         `法则：${merged.rule}`,
