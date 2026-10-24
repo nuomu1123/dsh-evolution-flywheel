@@ -54,7 +54,7 @@
 要求：Node.js `>=22.19`、pnpm `>=9`、已安装 DeepSeek Harness（源码 checkout 或 CLI）。
 
 ```bash
-git clone <your-repo-url> dsh-evolution-flywheel
+git clone https://github.com/nuomu1123/dsh-evolution-flywheel.git dsh-evolution-flywheel
 cd dsh-evolution-flywheel
 pnpm install
 pnpm run build

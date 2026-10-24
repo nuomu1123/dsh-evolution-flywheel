@@ -597,7 +597,7 @@ test('systemPrompt 自动注入已确认的偏好与事实摘要', async () => {
     const preference = await store.appendSuggested('你是我的朋友', 'preference')
     assert.ok(preference)
     await store.approve(preference.id)
-    const fact = await store.appendSuggested('项目根目录是 D:\\dsh-workspace', 'fact')
+    const fact = await store.appendSuggested('项目根目录是 D:\\workspace\\demo', 'fact')
     assert.ok(fact)
     await store.approve(fact.id)
 
@@ -637,7 +637,7 @@ test('systemPrompt 自动注入已确认的偏好与事实摘要', async () => {
     const text = digest.text({ agent })
     assert.match(text, /已确认的长期记忆/u)
     assert.match(text, /你是我的朋友/u)
-    assert.match(text, /项目根目录是 D:\\dsh-workspace/u)
+    assert.match(text, /项目根目录是 D:\\workspace\\demo/u)
   })
 })
 

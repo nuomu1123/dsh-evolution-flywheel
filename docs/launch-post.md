@@ -1,6 +1,6 @@
 # 发布文案草稿
 
-> 发布前请把 `<你的仓库地址>`、`<你的 npm 包地址>` 替换为真实链接；不要编造 star 数或用户量。
+> 仓库地址已填入；npm 包尚未发布，发布后再替换 `<你的 npm 包地址>`。不要编造 star 数或用户量。
 
 ## 一、V2EX
 
@@ -48,8 +48,8 @@
 
 1.0.0，MIT，88 项测试，单包 DSH 插件。
 
-仓库：<你的仓库地址>
-npm：<你的 npm 包地址>
+仓库：https://github.com/nuomu1123/dsh-evolution-flywheel
+npm：尚未发布
 
 如果你也在给 Agent 做记忆，欢迎来挑刺。尤其是“到底该不该让模型自己批准自己”这个问题。
 
@@ -93,7 +93,7 @@ npm：<你的 npm 包地址>
 4. It also goes on late-night interdisciplinary walks. The output is marked speculative, and a human must adopt it.
 5. To stop it from burning money at 3am, I added a token fuse and a daily budget. Now it checks the bill before thinking.
 6. Honest limits: the debate is one model playing both sides; self-audit is rule-based; memory is local plaintext JSONL.
-7. 1.0.0, MIT, 88 tests, single DSH plugin. Repo: <你的仓库地址>
+7. 1.0.0, MIT, 88 tests, single DSH plugin. Repo: https://github.com/nuomu1123/dsh-evolution-flywheel
 
 ## 四、GitHub Topics
 
@@ -123,7 +123,7 @@ gh repo edit --add-topic agent-memory,dsh-plugin,deepseek-harness,self-evolving,
 
 ## 五、发布检查
 
-- [ ] 替换 README 与本文的 `<你的仓库地址>` / `<你的 npm 包地址>`
+- [x] 替换 README 与本文的仓库地址（npm 包待发布后替换 `<你的 npm 包地址>`）
 - [ ] 补 3 张截图：记忆面板、辩论空间、自我审计
 - [ ] npm 包名可用（已确认 404）
 - [ ] `pnpm test` 88/88

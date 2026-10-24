@@ -44,6 +44,14 @@
     "local-first"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nuomu1123/dsh-evolution-flywheel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nuomu1123/dsh-evolution-flywheel/issues"
+  },
+  "homepage": "https://github.com/nuomu1123/dsh-evolution-flywheel#readme",
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.2.0-rc.1 <0.3.0-0",
     "@deepseek-ai/cordis": "^4.0.5"
