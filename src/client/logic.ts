@@ -4,7 +4,7 @@
  * 从 client/index.ts 抽出的原因：这些逻辑需要独立单测，不依赖 React 渲染。
  */
 
-export type FilterTab = 'all' | 'basic' | 'skill' | 'dma' | 'human' | 'debate' | 'audit' | 'model' | 'strategy' | 'curation'
+export type FilterTab = 'all' | 'basic' | 'skill' | 'dma' | 'human' | 'debate' | 'audit' | 'model' | 'strategy' | 'curation' | 'probe'
 
 export interface DebateRound {
   role: 'child' | 'mother'
@@ -14,7 +14,7 @@ export interface DebateRound {
 export interface MemoryItem {
   id: string
   content: string
-  type: 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight' | 'mental_model' | 'extraction_strategy' | 'curation_report'
+  type: 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight' | 'mental_model' | 'extraction_strategy' | 'curation_report' | 'cognitive_probe' | 'cognitive_brief'
   status:
     | 'suggested'
     | 'staged'
@@ -63,6 +63,11 @@ export interface MemoryItem {
   verifiedAt?: string
   reportJson?: string
   archived?: boolean
+  probeReason?: string
+  probeState?: 'open' | 'answered' | 'searching' | 'ignored'
+  answer?: string
+  answeredAt?: string
+  probeSource?: string
 }
 
 export interface TimelineNode {
@@ -80,6 +85,8 @@ export function memoryTypeLabel(type: MemoryItem['type']): string {
   if (type === 'mental_model') return '思维模型'
   if (type === 'extraction_strategy') return '提炼策略'
   if (type === 'curation_report') return '整理报告'
+  if (type === 'cognitive_probe') return '认知探针'
+  if (type === 'cognitive_brief') return '认知简报'
   return type === 'fact' ? '事实' : '偏好'
 }
 
@@ -99,6 +106,7 @@ export function originLabel(origin?: string): string {
   if (origin === 'strategy-reflection') return '提炼反思'
   if (origin === 'strategy-merge') return '策略融合'
   if (origin === 'curation') return '整理 Agent'
+  if (origin === 'probe') return '认知探针'
   if (origin === 'manual') return '手动记录'
   return '本地记忆'
 }
@@ -195,6 +203,7 @@ export function matchesFilter(item: MemoryItem, tab: FilterTab, keyword: string)
     || (tab === 'model' && item.type === 'mental_model')
     || (tab === 'strategy' && item.type === 'extraction_strategy')
     || (tab === 'curation' && item.type === 'curation_report')
+    || (tab === 'probe' && (item.type === 'cognitive_probe' || item.type === 'cognitive_brief'))
     || tab === 'audit'
   if (!tabMatch) return false
   if (keyword === '') return true
@@ -304,7 +313,7 @@ export function auditSummary(items: readonly MemoryItem[]): AuditSummary {
 
 /** 各分区卡片数量，用于 Tab 徽标。 */
 export function tabCounts(items: readonly MemoryItem[]): Record<FilterTab, number> {
-  const counts: Record<FilterTab, number> = { all: 0, basic: 0, skill: 0, dma: 0, human: 0, debate: 0, audit: 0, model: 0, strategy: 0, curation: 0 }
+  const counts: Record<FilterTab, number> = { all: 0, basic: 0, skill: 0, dma: 0, human: 0, debate: 0, audit: 0, model: 0, strategy: 0, curation: 0, probe: 0 }
   for (const item of items) {
     for (const tab of Object.keys(counts) as FilterTab[]) {
       if (matchesFilter(item, tab, '')) counts[tab] += 1

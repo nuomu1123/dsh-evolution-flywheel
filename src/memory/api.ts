@@ -22,6 +22,7 @@ import { createStrategyHooks } from './strategy.js'
 import type { MemoryContextBase } from './context.js'
 import { archiveIdsOf, parseCurationPayload, summarizeCurationQuality, summarizeCurationWithLlm } from './curator.js'
 import { runCurationCluster } from './curation-cluster.js'
+import { answerProbe, ignoreProbe, markProbeSearching } from './probes.js'
 import type { MemoryStore } from './store.js'
 import { distillModel } from './model-distill.js'
 
@@ -465,6 +466,91 @@ export async function handleMemoryApi(
       if (deleted) events.publish({ type: 'memory:removed', id })
       appendAudit('memory.delete', { id, deleted })
       sendJson(res, 200, { ok: true, id, deleted })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/probe/answer`) {
+      if (!requireJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
+        return
+      }
+      const body = await readJsonBody(req)
+      const id = typeof body.id === 'string' ? body.id.trim() : ''
+      const answer = typeof body.answer === 'string' ? body.answer : ''
+      if (id === '' || answer.trim() === '') {
+        sendJson(res, 400, { ok: false, error: 'id and a non-empty answer are required' })
+        return
+      }
+      const item = await answerProbe(store, id, answer)
+      if (item === undefined) {
+        sendJson(res, 404, { ok: false, error: 'probe not found' })
+        return
+      }
+      events.publish({ type: 'memory:updated', item })
+      appendAudit('memory.probe.answer', { id })
+      sendJson(res, 200, { ok: true, item })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/probe/ignore`) {
+      if (!requireJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
+        return
+      }
+      const body = await readJsonBody(req)
+      const id = typeof body.id === 'string' ? body.id.trim() : ''
+      if (id === '') {
+        sendJson(res, 400, { ok: false, error: 'id is required' })
+        return
+      }
+      const item = await ignoreProbe(store, id)
+      if (item === undefined) {
+        sendJson(res, 404, { ok: false, error: 'probe not found' })
+        return
+      }
+      events.publish({ type: 'memory:updated', item })
+      appendAudit('memory.probe.ignore', { id })
+      sendJson(res, 200, { ok: true, item })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/probe/dma`) {
+      if (!requireJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
+        return
+      }
+      if (dmaRunner === undefined) {
+        sendJson(res, 503, { ok: false, error: 'DMA runner unavailable' })
+        return
+      }
+      const body = await readJsonBody(req)
+      const id = typeof body.id === 'string' ? body.id.trim() : ''
+      if (id === '') {
+        sendJson(res, 400, { ok: false, error: 'id is required' })
+        return
+      }
+      const probe = await markProbeSearching(store, id)
+      if (probe === undefined) {
+        sendJson(res, 404, { ok: false, error: 'probe not found' })
+        return
+      }
+      events.publish({ type: 'memory:updated', item: probe })
+      const produced = await dmaRunner.runNow()
+      appendAudit('memory.probe.dma', { id, insights: produced.length })
+      sendJson(res, 200, { ok: true, probe, items: produced })
+      return
+    }
+
+    if (req.method === 'GET' && url.pathname === `${PREFIX}/api/probe/brief/latest`) {
+      const items = await store.list()
+      const brief = items
+        .filter(item => item.type === 'cognitive_brief')
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
+      sendJson(res, 200, {
+        ok: brief !== undefined,
+        brief: brief ?? null,
+        probes: items.filter(item => item.type === 'cognitive_probe'),
+      })
       return
     }
 

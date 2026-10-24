@@ -2,7 +2,7 @@
 
 > 不是又一个记忆库，而是一个会怀疑自己、会跟自己对账、会在半夜查文献的元认知系统。
 
-**1.0.0 · MIT · 121 项测试 · 单包 DSH 插件 · 本地优先**
+**1.0.0 · MIT · 123 项测试 · 单包 DSH 插件 · 本地优先**
 
 ## 一个真实的故事
 
@@ -242,6 +242,14 @@ flowchart LR
 - **三角色集群**：`classifier` 规则分类 → `red-team` 专查误归档/合并误判 → `reporter` 汇总；角色痕迹写入报告；
 - 单飞 + 规则引擎，不依赖 LLM 也能出报告，不阻塞主会话。
 
+### 认知探针（苏格拉底式提问）
+
+- AI 基于自身世界模型的缺口主动向人类提问；每一条探针写入 `cognitive_probe`，带原因与来源；
+- 触发：大提炼缺少前提/边界，或离线漫游证据两极分化（分歧/矛盾/冲突）；
+- 面板「灵魂拷问」专区：填写答案、授权 DMA 定向搜索、或跳过；
+- 每周生成认知简报，汇总好问题与人类没答上来的盲区；
+- 底层指令：你是拥有独立世界模型的同行者……提问本身就是我们共同进化的阶梯。
+
 ---
 
 ## 状态机
@@ -367,6 +375,10 @@ POST /memory-explorer/api/delete          # { id }
 POST /memory-explorer/api/curation/run    # 生成整理报告
 POST /memory-explorer/api/curation/decision # { id, decision, reason }
 GET  /memory-explorer/api/curation/latest # 最新整理报告
+POST /memory-explorer/api/probe/answer    # { id, answer } 人类回答探针
+POST /memory-explorer/api/probe/dma       # { id } 授权定向搜索
+POST /memory-explorer/api/probe/ignore    # { id } 跳过探针
+GET  /memory-explorer/api/probe/brief/latest # 认知简报
 ```
 
 ### 工具
@@ -464,10 +476,11 @@ pnpm test
 - [x] 人类采纳率统计
 - [x] 整理报告的 LLM 审查摘要（预算门，失败回退规则摘要）
 - [x] 三角色整理集群（classifier / red-team / reporter）
+- [x] 认知探针（大提炼/DMA 触发、灵魂拷问专区、每周认知简报）
 
 下一步：
 
-- [ ] 整理报告 UI 实机验证（需重载插件）
+- [ ] 灵魂拷问与整理报告 UI 实机验证（需重载插件）
 - [ ] 更细粒度的学科池与可配置权重
 - [ ] 搜索证据去重与来源可信度排序
 - [ ] 从人类裁决反向学习偏好

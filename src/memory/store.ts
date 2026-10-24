@@ -17,7 +17,7 @@ const sanitize = (value: unknown, maxLength = 1000): string =>
 const sanitizeQuiet = (value: unknown, maxLength = 1000): string =>
   sanitizeText(value, maxLength, '记忆读取', false)
 
-export type MemoryType = 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight' | 'mental_model' | 'extraction_strategy' | 'curation_report'
+export type MemoryType = 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight' | 'mental_model' | 'extraction_strategy' | 'curation_report' | 'cognitive_probe' | 'cognitive_brief'
 export type MemoryStatus =
   | 'suggested'
   | 'staged'
@@ -117,6 +117,16 @@ export interface MemoryRecord {
   mergedFrom?: string[]
   /** 提炼策略：模型自评置信度（0-1）。 */
   confidence?: number
+  /** 认知探针：提问原因（基于哪段记忆/哪次漫游）。 */
+  probeReason?: string
+  /** 认知探针状态：open=待人类回答，answered=已回答，searching=已授权 DMA 搜索，ignored=跳过。 */
+  probeState?: 'open' | 'answered' | 'searching' | 'ignored'
+  /** 人类对探针的回答。 */
+  answer?: string
+  /** 回答时间。 */
+  answeredAt?: string
+  /** 探针来源：model-distill / dma / manual。 */
+  probeSource?: string
 }
 
 /** 共享世界模型的变更事件：任何 Agent 写入后立即广播，保证秒级同步。 */
@@ -231,6 +241,8 @@ const MEMORY_TYPES: readonly MemoryType[] = [
   'mental_model',
   'extraction_strategy',
   'curation_report',
+  'cognitive_probe',
+  'cognitive_brief',
 ]
 const MEMORY_STATUSES: readonly MemoryStatus[] = [
   'suggested',
@@ -320,6 +332,14 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
       : {}),
     ...(value.archived === true ? { archived: true } : {}),
     ...(typeof value.reportJson === 'string' ? { reportJson: sanitizeQuiet(value.reportJson, 16000) } : {}),
+    ...(typeof value.probeReason === 'string' ? { probeReason: sanitizeQuiet(value.probeReason, 500) } : {}),
+    ...(value.probeState === 'open' || value.probeState === 'answered'
+      || value.probeState === 'searching' || value.probeState === 'ignored'
+      ? { probeState: value.probeState }
+      : {}),
+    ...(typeof value.answer === 'string' ? { answer: sanitizeQuiet(value.answer, 2000) } : {}),
+    ...(typeof value.answeredAt === 'string' ? { answeredAt: value.answeredAt } : {}),
+    ...(typeof value.probeSource === 'string' ? { probeSource: sanitizeQuiet(value.probeSource, 120) } : {}),
     ...(typeof value.thinkingModel === 'string' ? { thinkingModel: sanitizeQuiet(value.thinkingModel, 120) } : {}),
     ...(typeof value.analogyReason === 'string' ? { analogyReason: sanitizeQuiet(value.analogyReason, 500) } : {}),
     ...(typeof value.effectiveFor === 'string' ? { effectiveFor: sanitizeQuiet(value.effectiveFor, 300) } : {}),
@@ -628,6 +648,11 @@ export class MemoryStore {
           : {}),
         ...(patch.archived !== undefined ? { archived: patch.archived } : {}),
         ...(patch.reportJson !== undefined ? { reportJson: sanitize(patch.reportJson, 16000) } : {}),
+        ...(patch.probeReason !== undefined ? { probeReason: sanitize(patch.probeReason, 500) } : {}),
+        ...(patch.probeState !== undefined ? { probeState: patch.probeState } : {}),
+        ...(patch.answer !== undefined ? { answer: sanitize(patch.answer, 2000) } : {}),
+        ...(patch.answeredAt !== undefined ? { answeredAt: patch.answeredAt } : {}),
+        ...(patch.probeSource !== undefined ? { probeSource: sanitize(patch.probeSource, 120) } : {}),
       }
       const next = [...items]
       next[index] = updated

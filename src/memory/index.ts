@@ -7,6 +7,7 @@ import { registerConflictScanner, type ConflictScannerContext } from './conflict
 import { createHostDmaExplorer, DmaRunner, registerDmaSchedule } from './dma.js'
 import { createToolEvidenceSearch } from './evidence-search.js'
 import { registerCurationSchedule } from './curation-cluster.js'
+import { registerCognitiveBriefSchedule } from './probes.js'
 import { MemoryEventHub } from './events.js'
 import { registerMemoryExtraction, type MemoryExtractionContext } from './extraction.js'
 import { registerMemoryRecall, type MemoryRecallContext } from './recall.js'
@@ -53,4 +54,5 @@ export function registerMemoryFeatures(ctx: MemoryHostContext): void {
   registerConflictScanner(ctx, store, events)
   registerMemoryRecall(ctx, store)
   registerCurationSchedule(ctx, store, events)
+  registerCognitiveBriefSchedule(ctx, store, events)
 }

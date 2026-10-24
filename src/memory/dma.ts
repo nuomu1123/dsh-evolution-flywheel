@@ -14,6 +14,7 @@ import { readBudget } from './budget.js'
 import { createToolEvidenceSearch } from './evidence-search.js'
 import type { MemoryEventHub } from './events.js'
 import { sanitizeText } from './sanitize.js'
+import { createProbe } from './probes.js'
 
 const sanitize = (value: unknown, maxLength = 1000): string =>
   sanitizeText(value, maxLength, '离线漫游')
@@ -543,6 +544,17 @@ export class DmaRunner {
           items.push(item)
           this.events.publish({ type: 'memory:added', item })
         }
+      }
+      // 外部信息两极分化时，把问题带回给人类，而不是替人类拍板。
+      const polarized = exploration.insights.some(text =>
+        /(分歧|矛盾|冲突|两种|一方面|另一方面|无法收敛|相反|对立)/u.test(text))
+      if (polarized) {
+        await createProbe(this.store, {
+          question: `关于「${exploration.topic ?? exploration.title}」，外部证据出现分歧。你更倾向哪种判断？`,
+          reason: `离线漫游（${exploration.discipline ?? '跨学科'}）的信息呈两极分化，无法收敛：${(exploration.insights[0] ?? '').slice(0, 120)}`,
+          source: 'dma',
+          ...(items[0] === undefined ? {} : { sourceId: items[0].id }),
+        })
       }
       await surfingLog.log(
         `run-complete insights=${items.length} tokens=${exploration.tokensUsed ?? 0} discipline=${exploration.discipline ?? 'unknown'}`,

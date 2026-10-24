@@ -12,6 +12,7 @@ import type { MemoryContextBase } from './context.js'
 import { readBudget } from './budget.js'
 import { complete } from './review-driver.js'
 import { sanitizeText } from './sanitize.js'
+import { createProbe } from './probes.js'
 import type { StrategyHooks } from './strategy.js'
 import type { MemoryRecord, MemoryStore } from './store.js'
 
@@ -122,6 +123,18 @@ export async function distillModel(
     ],
   })
   if (saved === undefined) return undefined
+
+  // 大提炼发现“缺少关键前提/边界”时，向人类提一个高价值问题。
+  if (model.appliesTo === '' || model.counterexample === '') {
+    await createProbe(store, {
+      question: `「${model.name}」在哪些场景下会失效？边界条件是什么？`,
+      reason: model.counterexample === ''
+        ? '新提炼的思维模型缺少反例/边界，可能被过度泛化'
+        : '新提炼的思维模型缺少适用场景，无法判断何时该用',
+      source: 'model-distill',
+      sourceId: saved.id,
+    })
+  }
 
   const outcome: DistillOutcome = { item: saved }
   if (hooks !== undefined) {

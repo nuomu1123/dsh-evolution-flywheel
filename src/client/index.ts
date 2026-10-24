@@ -1120,6 +1120,7 @@ const FILTER_TABS: Array<{ id: FilterTab; label: string }> = [
   { id: 'model', label: '思维模型' },
   { id: 'strategy', label: '方法论库' },
   { id: 'curation', label: '整理报告' },
+  { id: 'probe', label: '灵魂拷问' },
 ]
 
 const MEMORY_PULSE_CSS = `
@@ -1228,6 +1229,7 @@ function MemoryExplorerPage() {
   const [distilling, setDistilling] = React.useState(false)
   const [curationDeciding, setCurationDeciding] = React.useState(null)
   const [curating, setCurating] = React.useState(false)
+  const [probeDeciding, setProbeDeciding] = React.useState(null)
   const [density, setDensity] = React.useState('standard')
   const pageRef = React.useRef(null)
   const loadSeqRef = React.useRef(0)
@@ -1478,6 +1480,80 @@ function MemoryExplorerPage() {
       setError((caught as Error)?.message || '整理裁决失败')
     } finally {
       setCurationDeciding(null)
+    }
+  }
+
+  const probeAnswer = async (item: MemoryItem) => {
+    const answer = (drafts[item.id] ?? '').trim()
+    if (answer === '') {
+      setError('请先写下你的答案')
+      return
+    }
+    setProbeDeciding(`${item.id}:answer`)
+    setError('')
+    try {
+      const response = await fetch(`${MEMORY_API}/probe/answer`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: item.id, answer }),
+      })
+      const body = await response.json()
+      if (!response.ok || body?.ok !== true) {
+        throw new Error(typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`)
+      }
+      setItems((previous: MemoryItem[]) =>
+        previous.map(existing => existing.id === item.id ? body.item : existing))
+    } catch (caught) {
+      setError((caught as Error)?.message || '提交答案失败')
+    } finally {
+      setProbeDeciding(null)
+    }
+  }
+
+  const probeDma = async (item: MemoryItem) => {
+    setProbeDeciding(`${item.id}:dma`)
+    setError('')
+    try {
+      const response = await fetch(`${MEMORY_API}/probe/dma`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: item.id }),
+      })
+      const body = await response.json()
+      if (!response.ok || body?.ok !== true) {
+        throw new Error(typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`)
+      }
+      if (body.probe !== undefined) {
+        setItems((previous: MemoryItem[]) =>
+          previous.map(existing => existing.id === item.id ? body.probe : existing))
+      }
+      void load()
+    } catch (caught) {
+      setError((caught as Error)?.message || '定向搜索失败')
+    } finally {
+      setProbeDeciding(null)
+    }
+  }
+
+  const probeIgnore = async (item: MemoryItem) => {
+    setProbeDeciding(`${item.id}:ignore`)
+    setError('')
+    try {
+      const response = await fetch(`${MEMORY_API}/probe/ignore`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: item.id }),
+      })
+      const body = await response.json()
+      if (!response.ok || body?.ok !== true) {
+        throw new Error(typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`)
+      }
+      setItems((previous: MemoryItem[]) =>
+        previous.map(existing => existing.id === item.id ? body.item : existing))
+    } catch (caught) {
+      setError((caught as Error)?.message || '跳过失败')
+    } finally {
+      setProbeDeciding(null)
     }
   }
 
@@ -2142,6 +2218,17 @@ function MemoryExplorerPage() {
                 return h('div', { key: 'curation-report', style: memoryStyles.detail }, text)
               })()
               : null,
+            isExpanded && item.type === 'cognitive_probe'
+              ? h('div', { key: 'probe-detail', style: memoryStyles.detail }, [
+                item.probeReason === undefined ? '' : `提问原因：${item.probeReason}`,
+                `状态：${item.probeState === 'open' ? '待回答' : item.probeState === 'answered' ? '已回答' : item.probeState === 'searching' ? '已授权搜索' : '已跳过'}`,
+                item.probeSource === undefined ? '' : `来源：${item.probeSource}`,
+                item.answer === undefined ? '' : `人类答案：${item.answer}`,
+              ].filter(Boolean).join('\n'))
+              : null,
+            isExpanded && item.type === 'cognitive_brief'
+              ? h('div', { key: 'brief-detail', style: memoryStyles.detail }, item.context ?? '暂无盲区记录')
+              : null,
             isExpanded && item.trace !== undefined && item.trace.length > 0
               ? h('div', { key: 'trace', style: memoryStyles.traceBox }, [
                 h('div', { key: 'title', style: memoryStyles.traceTitle }, '提炼过程'),
@@ -2279,6 +2366,44 @@ function MemoryExplorerPage() {
             ]),
           ]),
           h('div', { key: 'actions', style: memoryStyles.actions }, [
+            item.type === 'cognitive_probe' && item.probeState === 'open'
+              ? h('div', { key: 'probe-actions', style: { display: 'flex', flexDirection: 'column', gap: '6px', width: '100%' } }, [
+                h('textarea', {
+                  key: 'answer',
+                  style: memoryStyles.resolutionInput,
+                  rows: 2,
+                  value: drafts[item.id] ?? '',
+                  placeholder: '写下你的答案；答不上来就让它去查',
+                  onChange: (event: { target: { value: string } }) => {
+                    const value = event.target.value
+                    setDrafts((previous: Record<string, string>) => ({ ...previous, [item.id]: value }))
+                  },
+                }),
+                h('div', { key: 'buttons', style: memoryStyles.actions }, [
+                  h('button', {
+                    key: 'answer',
+                    type: 'button',
+                    style: memoryStyles.approve,
+                    disabled: probeDeciding !== null,
+                    onClick: () => { void probeAnswer(item) },
+                  }, probeDeciding === `${item.id}:answer` ? '提交中…' : '我知道答案'),
+                  h('button', {
+                    key: 'dma',
+                    type: 'button',
+                    style: memoryStyles.save,
+                    disabled: probeDeciding !== null,
+                    onClick: () => { void probeDma(item) },
+                  }, probeDeciding === `${item.id}:dma` ? '去查中…' : '我也不懂，去查吧'),
+                  h('button', {
+                    key: 'ignore',
+                    type: 'button',
+                    style: memoryStyles.delete,
+                    disabled: probeDeciding !== null,
+                    onClick: () => { void probeIgnore(item) },
+                  }, '跳过'),
+                ]),
+              ])
+              : null,
             item.type === 'curation_report' && item.status !== 'approved' && item.status !== 'rejected'
               ? h('div', { key: 'curation-actions', style: { display: 'flex', flexDirection: 'column', gap: '6px', width: '100%' } }, [
                 h('textarea', {
