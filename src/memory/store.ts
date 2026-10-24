@@ -17,7 +17,7 @@ const sanitize = (value: unknown, maxLength = 1000): string =>
 const sanitizeQuiet = (value: unknown, maxLength = 1000): string =>
   sanitizeText(value, maxLength, '记忆读取', false)
 
-export type MemoryType = 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight' | 'mental_model'
+export type MemoryType = 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight' | 'mental_model' | 'extraction_strategy'
 export type MemoryStatus =
   | 'suggested'
   | 'staged'
@@ -83,6 +83,28 @@ export interface MemoryRecord {
   debateTokens?: number
   /** 本次探索消耗的 token。 */
   tokensUsed?: number
+  /** 提炼策略：本次提炼使用的思维模型（例如“系统韧性”“反馈回路”）。 */
+  thinkingModel?: string
+  /** 提炼策略：为什么这样类比（跨域映射的推理依据）。 */
+  analogyReason?: string
+  /** 提炼策略：这种提炼方法对哪类原始材料最有效。 */
+  effectiveFor?: string
+  /** 提炼策略的来源环节：small=四段式小提炼，large=睡眠巩固大提炼，merge=策略融合。 */
+  strategyStage?: 'small' | 'large' | 'merge'
+  /** 提炼策略：被成功采纳的次数（人类采纳或产出被采纳时累加）。 */
+  successCount?: number
+  /** 提炼策略：被判定失败的次数。 */
+  failureCount?: number
+  /** 提炼策略：被注入到下一次提炼提示词的次数。 */
+  appliedCount?: number
+  /** 提炼策略：最近一次被注入的时间。 */
+  lastAppliedAt?: string
+  /** 提炼策略：是否已进化为“跨域映射法则”（最高优先级）。 */
+  rule?: boolean
+  /** 提炼策略：融合来源的策略 id 列表。 */
+  mergedFrom?: string[]
+  /** 提炼策略：模型自评置信度（0-1）。 */
+  confidence?: number
 }
 
 const MAX_FILE_BYTES = 1024 * 1024
@@ -148,6 +170,7 @@ const MEMORY_TYPES: readonly MemoryType[] = [
   'speculative',
   'meta_insight',
   'mental_model',
+  'extraction_strategy',
 ]
 const MEMORY_STATUSES: readonly MemoryStatus[] = [
   'suggested',
@@ -227,6 +250,23 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
     ...(typeof value.reviewTokens === 'number' ? { reviewTokens: value.reviewTokens } : {}),
     ...(typeof value.debateTokens === 'number' ? { debateTokens: value.debateTokens } : {}),
     ...(typeof value.tokensUsed === 'number' ? { tokensUsed: value.tokensUsed } : {}),
+    ...(typeof value.thinkingModel === 'string' ? { thinkingModel: sanitizeQuiet(value.thinkingModel, 120) } : {}),
+    ...(typeof value.analogyReason === 'string' ? { analogyReason: sanitizeQuiet(value.analogyReason, 500) } : {}),
+    ...(typeof value.effectiveFor === 'string' ? { effectiveFor: sanitizeQuiet(value.effectiveFor, 300) } : {}),
+    ...(value.strategyStage === 'small' || value.strategyStage === 'large' || value.strategyStage === 'merge'
+      ? { strategyStage: value.strategyStage }
+      : {}),
+    ...(typeof value.successCount === 'number' ? { successCount: Math.max(0, Math.trunc(value.successCount)) } : {}),
+    ...(typeof value.failureCount === 'number' ? { failureCount: Math.max(0, Math.trunc(value.failureCount)) } : {}),
+    ...(typeof value.appliedCount === 'number' ? { appliedCount: Math.max(0, Math.trunc(value.appliedCount)) } : {}),
+    ...(typeof value.lastAppliedAt === 'string' ? { lastAppliedAt: value.lastAppliedAt } : {}),
+    ...(value.rule === true ? { rule: true } : {}),
+    ...(Array.isArray(value.mergedFrom)
+      ? { mergedFrom: value.mergedFrom.filter((id): id is string => typeof id === 'string').slice(0, 12) }
+      : {}),
+    ...(typeof value.confidence === 'number'
+      ? { confidence: Math.max(0, Math.min(1, value.confidence)) }
+      : {}),
   }
 }
 
@@ -307,7 +347,13 @@ export class MemoryStore {
       const current = items[index]
       if (current === undefined) return undefined
       if (current.status === 'approved') return current
-      const updated: MemoryRecord = { ...current, status: 'approved' }
+      const updated: MemoryRecord = {
+        ...current,
+        status: 'approved',
+        ...(current.type === 'extraction_strategy'
+          ? { successCount: (current.successCount ?? 0) + 1 }
+          : {}),
+      }
       const next = [...items]
       next[index] = updated
       await this.writeAll(next)
@@ -467,11 +513,54 @@ export class MemoryStore {
         ...(patch.count !== undefined ? { count: patch.count } : {}),
         ...(patch.reviewTokens !== undefined ? { reviewTokens: patch.reviewTokens } : {}),
         ...(patch.debateTokens !== undefined ? { debateTokens: patch.debateTokens } : {}),
+        ...(patch.thinkingModel !== undefined ? { thinkingModel: sanitize(patch.thinkingModel, 120) } : {}),
+        ...(patch.analogyReason !== undefined ? { analogyReason: sanitize(patch.analogyReason, 500) } : {}),
+        ...(patch.effectiveFor !== undefined ? { effectiveFor: sanitize(patch.effectiveFor, 300) } : {}),
+        ...(patch.strategyStage !== undefined ? { strategyStage: patch.strategyStage } : {}),
+        ...(patch.successCount !== undefined ? { successCount: Math.max(0, Math.trunc(patch.successCount)) } : {}),
+        ...(patch.failureCount !== undefined ? { failureCount: Math.max(0, Math.trunc(patch.failureCount)) } : {}),
+        ...(patch.appliedCount !== undefined ? { appliedCount: Math.max(0, Math.trunc(patch.appliedCount)) } : {}),
+        ...(patch.lastAppliedAt !== undefined ? { lastAppliedAt: patch.lastAppliedAt } : {}),
+        ...(patch.rule !== undefined ? { rule: patch.rule } : {}),
+        ...(Array.isArray(patch.mergedFrom)
+          ? { mergedFrom: patch.mergedFrom.filter((id): id is string => typeof id === 'string').slice(0, 12) }
+          : {}),
+        ...(patch.confidence !== undefined
+          ? { confidence: Math.max(0, Math.min(1, patch.confidence)) }
+          : {}),
       }
       const next = [...items]
       next[index] = updated
       await this.writeAll(next)
       return updated
+    })
+  }
+
+  /**
+   * 记录策略被注入：appliedCount+1、lastAppliedAt=now。
+   * 只触碰 extraction_strategy，其他类型即使传错 id 也不会被修改。
+   */
+  touchStrategies(ids: readonly string[]): Promise<MemoryRecord[]> {
+    const keys = [...new Set(ids.map(id => id.trim()).filter(id => id !== ''))]
+    if (keys.length === 0) return Promise.resolve([])
+    return this.runExclusive(async () => {
+      await this.ensureSeeded()
+      const items = await this.readAll()
+      const now = new Date().toISOString()
+      const touched: MemoryRecord[] = []
+      const next = items.map(item => {
+        if (item.type !== 'extraction_strategy' || !keys.includes(item.id)) return item
+        const updated: MemoryRecord = {
+          ...item,
+          appliedCount: (item.appliedCount ?? 0) + 1,
+          lastAppliedAt: now,
+          trace: [...(item.trace ?? []), `第 ${(item.appliedCount ?? 0) + 1} 次被注入（${now}）`].slice(-10),
+        }
+        touched.push(updated)
+        return updated
+      })
+      if (touched.length > 0) await this.writeAll(next)
+      return touched
     })
   }
 

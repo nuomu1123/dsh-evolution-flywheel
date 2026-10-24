@@ -18,6 +18,8 @@ import type { MemoryEventHub } from './events.js'
 import { listSecurityIntercepts } from './sanitize.js'
 import { summarizeUsage } from './usage.js'
 import type { SkillReviewEngine } from './state-machine.js'
+import { createStrategyHooks } from './strategy.js'
+import type { MemoryContextBase } from './context.js'
 import type { MemoryStore } from './store.js'
 import { distillModel } from './model-distill.js'
 
@@ -170,14 +172,29 @@ export async function handleMemoryApi(
     }
 
     if (req.method === 'POST' && url.pathname === `${PREFIX}/api/model/distill`) {
-      const item = await distillModel(modelContext ?? {}, store)
-      if (item === undefined) {
+      const strategyHooks = modelContext === undefined
+        ? undefined
+        : createStrategyHooks(modelContext as MemoryContextBase, store)
+      const result = await distillModel(modelContext ?? {}, store, undefined, strategyHooks)
+      if (result === undefined) {
         sendJson(res, 200, { ok: false, error: '暂时不足以提炼模型，或提炼失败' })
         return
       }
+      const { item, strategy, rule } = result
       events.publish({ type: 'memory:added', item })
-      appendAudit('memory.model.distill', { id: item.id })
-      sendJson(res, 200, { ok: true, item })
+      if (strategy !== undefined) events.publish({ type: 'memory:added', item: strategy })
+      if (rule !== undefined) events.publish({ type: 'memory:added', item: rule })
+      appendAudit('memory.model.distill', {
+        id: item.id,
+        ...(strategy === undefined ? {} : { strategy: strategy.id }),
+        ...(rule === undefined ? {} : { rule: rule.id }),
+      })
+      sendJson(res, 200, {
+        ok: true,
+        item,
+        ...(strategy === undefined ? {} : { strategy }),
+        ...(rule === undefined ? {} : { rule }),
+      })
       return
     }
 

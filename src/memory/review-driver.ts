@@ -118,9 +118,10 @@ function debateRoundsOf(value: unknown): DebateRound[] {
 /** 创建调用 ctx.llm 的审阅驱动。 */
 export function createLlmReviewDriver(ctx: MemoryContextBase): SkillReviewDriver {
   return {
-    async review(record: MemoryRecord): Promise<ReviewVerdict> {
+    async review(record: MemoryRecord, strategyHint = ''): Promise<ReviewVerdict> {
       const prompt = [
         '你是母 Agent，负责初审子 Agent 提交的排错经验。',
+        ...(strategyHint === '' ? [] : ['', strategyHint, '']),
         `错误特征：${sanitize(record.errorSignature ?? '', 300)}`,
         `任务上下文：${sanitize(record.context ?? '', 500)}`,
         `候选解决办法：${sanitize(record.resolution ?? '', 1000) || '（空）'}`,
@@ -129,7 +130,7 @@ export function createLlmReviewDriver(ctx: MemoryContextBase): SkillReviewDriver
       ].join('\n')
       const completion = await complete(
         ctx,
-        '你是严格的技术审阅者。只输出 JSON，不要输出 Markdown。',
+        '你是严格的技术审阅者。若提供了提炼方法论，先判断本次材料是否适用，再给出裁决。只输出 JSON，不要输出 Markdown。',
         prompt,
         memoryConfig.reviewMaxTokens,
       )

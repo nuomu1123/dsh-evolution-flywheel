@@ -15,6 +15,7 @@ import { clampMetaInsight, sanitizeText } from './sanitize.js'
 const sanitize = (value: unknown, maxLength = 1000): string =>
   sanitizeText(value, maxLength, '状态机')
 import type { DebateRound, MemoryRecord, MemoryStore } from './store.js'
+import type { StrategyHooks } from './strategy.js'
 
 export interface ReviewVerdict {
   decision: 'approve' | 'reject'
@@ -52,8 +53,8 @@ export interface EvidenceSearch {
 }
 
 export interface SkillReviewDriver {
-  /** 母 Agent 初审。 */
-  review(record: MemoryRecord): Promise<ReviewVerdict>
+  /** 母 Agent 初审；strategyHint 是提炼前自动注入的方法论。 */
+  review(record: MemoryRecord, strategyHint?: string): Promise<ReviewVerdict>
   /** 子母一轮对抗辩论。 */
   debate(record: MemoryRecord, review: ReviewVerdict): Promise<DebateVerdict>
   /** 开卷申诉：带外部证据再次请求母 Agent 裁决。 */
@@ -72,6 +73,7 @@ export class SkillReviewEngine {
     private readonly events: MemoryEventHub,
     private readonly driver: SkillReviewDriver,
     private readonly evidenceSearch?: EvidenceSearch,
+    private readonly strategy?: StrategyHooks,
   ) {}
 
   /** 提交一条 staged 经验，驱动完整状态机。并发重复提交会被单飞保护。 */
@@ -89,30 +91,60 @@ export class SkillReviewEngine {
       const budget = await readBudget(this.store)
       if (budget.exceeded) return record
 
+      // 提炼前：自动读取最近最成功的 2-3 条方法论，注入初审提示词。
+      let strategyText = ''
+      let strategyNames: string[] = []
+      if (this.strategy !== undefined) {
+        try {
+          const injection = await this.strategy.injection(3)
+          strategyText = injection.text
+          strategyNames = injection.names
+        } catch (error) {
+          console.error('[dsh-evolution-flywheel] strategy injection failed:', error)
+        }
+      }
+
       await this.patch(key, {
         status: 'under_review',
         reviewRound: 1,
+        ...(strategyNames.length > 0
+          ? {
+            trace: [
+              ...(record.trace ?? []),
+              `提炼前注入 ${strategyNames.length} 条策略：${strategyNames.join(' / ').slice(0, 160)}`,
+            ].slice(-10),
+          }
+          : {}),
       })
 
+      const task = `排错经验：${record.errorSignature ?? record.content}｜上下文：${record.context ?? '未记录'}`
       const safeRecord = this.safeRecord(record)
       let verdict: ReviewVerdict
       try {
-        verdict = await this.driver.review(safeRecord)
+        verdict = await this.driver.review(safeRecord, strategyText)
       } catch (error) {
-        return this.humanIntervention(key, `初审失败：${this.errorText(error)}`)
+        return this.reflectAfter(
+          await this.humanIntervention(key, `初审失败：${this.errorText(error)}`),
+          task,
+          `初审失败：${this.errorText(error)}`,
+        )
       }
 
       const reviewReason = sanitize(verdict.reason, 500)
       if (verdict.decision === 'approve') {
-        return this.patch(key, {
-          status: 'approved',
-          reviewReason,
-          ...(verdict.resolution !== undefined && verdict.resolution.trim() !== ''
-            ? { resolution: sanitize(verdict.resolution, 1000) }
-            : {}),
-          ...(verdict.tokensUsed !== undefined ? { reviewTokens: verdict.tokensUsed } : {}),
-          ...(verdict.metaInsight !== undefined ? { metaInsight: clampMetaInsight(verdict.metaInsight) } : {}),
-        })
+        return this.reflectAfter(
+          await this.patch(key, {
+            status: 'approved',
+            reviewReason,
+            ...(verdict.resolution !== undefined && verdict.resolution.trim() !== ''
+              ? { resolution: sanitize(verdict.resolution, 1000) }
+              : {}),
+            ...(verdict.tokensUsed !== undefined ? { reviewTokens: verdict.tokensUsed } : {}),
+            ...(verdict.metaInsight !== undefined ? { metaInsight: clampMetaInsight(verdict.metaInsight) } : {}),
+          }),
+          task,
+          `初审通过：${reviewReason}${verdict.resolution === undefined ? '' : `｜建议解决：${verdict.resolution}`}`,
+        )
       }
 
       await this.patch(key, {
@@ -134,7 +166,11 @@ export class SkillReviewEngine {
       try {
         debate = await this.driver.debate(safeRecord, review)
       } catch (error) {
-        return this.humanIntervention(key, `辩论失败：${this.errorText(error)}`)
+        return this.reflectAfter(
+          await this.humanIntervention(key, `辩论失败：${this.errorText(error)}`),
+          task,
+          `辩论失败：${this.errorText(error)}`,
+        )
       }
 
       const debateSummary = sanitize(debate.summary ?? '', 800)
@@ -147,28 +183,42 @@ export class SkillReviewEngine {
       const metaInsight = debate.metaInsight === undefined ? undefined : clampMetaInsight(debate.metaInsight)
       if (!debate.converged || debate.decision === 'human_intervention') {
         const withEvidence = await this.tryEvidenceAppeal(key, safeRecord, review, debateSummary)
-        if (withEvidence !== undefined) return withEvidence
-        return this.patch(key, {
-          status: 'human_intervention',
+        if (withEvidence !== undefined) {
+          return this.reflectAfter(
+            withEvidence,
+            task,
+            `开卷申诉后状态：${withEvidence.status === 'approved' ? '证据说服母 Agent，已通过' : '证据仍不足以推翻驳回，交人类裁决'}`,
+          )
+        }
+        return this.reflectAfter(
+          await this.patch(key, {
+            status: 'human_intervention',
+            debateSummary,
+            ...(challenge !== '' ? { challenge } : {}),
+            ...(debateRounds.length > 0 ? { debateRounds } : {}),
+            ...(debate.tokensUsed !== undefined ? { debateTokens: debate.tokensUsed } : {}),
+            ...(metaInsight !== undefined ? { metaInsight } : {}),
+          }),
+          task,
+          `辩论未收敛：${debateSummary || '双方未达成一致'}`,
+        )
+      }
+
+      return this.reflectAfter(
+        await this.patch(key, {
+          status: debate.decision === 'approve' ? 'approved' : 'rejected',
           debateSummary,
           ...(challenge !== '' ? { challenge } : {}),
           ...(debateRounds.length > 0 ? { debateRounds } : {}),
           ...(debate.tokensUsed !== undefined ? { debateTokens: debate.tokensUsed } : {}),
           ...(metaInsight !== undefined ? { metaInsight } : {}),
-        })
-      }
-
-      return this.patch(key, {
-        status: debate.decision === 'approve' ? 'approved' : 'rejected',
-        debateSummary,
-        ...(challenge !== '' ? { challenge } : {}),
-        ...(debateRounds.length > 0 ? { debateRounds } : {}),
-        ...(debate.tokensUsed !== undefined ? { debateTokens: debate.tokensUsed } : {}),
-        ...(metaInsight !== undefined ? { metaInsight } : {}),
-        ...(debate.decision === 'approve' && debate.resolution !== undefined && debate.resolution.trim() !== ''
-          ? { resolution: sanitize(debate.resolution, 1000) }
-          : {}),
-      })
+          ...(debate.decision === 'approve' && debate.resolution !== undefined && debate.resolution.trim() !== ''
+            ? { resolution: sanitize(debate.resolution, 1000) }
+            : {}),
+        }),
+        task,
+        `辩论收敛，裁决${debate.decision === 'approve' ? '通过' : '驳回'}：${debateSummary || '无摘要'}`,
+      )
     } finally {
       this.inFlight.delete(key)
     }
@@ -212,6 +262,21 @@ export class SkillReviewEngine {
       status: decision === 'adopt' ? 'approved' : 'rejected',
       humanDecision: decision,
     })
+  }
+
+  /** 小提炼收尾：强迫后置反思并入库为策略候选；失败不阻塞主流程。 */
+  private async reflectAfter(
+    item: MemoryRecord | undefined,
+    task: string,
+    outcome: string,
+  ): Promise<MemoryRecord | undefined> {
+    if (this.strategy === undefined || item === undefined) return item
+    try {
+      await this.strategy.reflect({ stage: 'small', task, outcome })
+    } catch (error) {
+      console.error('[dsh-evolution-flywheel] strategy reflection failed:', error)
+    }
+    return item
   }
 
   private async patch(

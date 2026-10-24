@@ -10,6 +10,7 @@ import { MemoryEventHub } from './events.js'
 import { registerMemoryExtraction, type MemoryExtractionContext } from './extraction.js'
 import { registerMemoryRecall, type MemoryRecallContext } from './recall.js'
 import { createLlmReviewDriver } from './review-driver.js'
+import { createStrategyHooks } from './strategy.js'
 import { registerSkillExtraction, type SkillExtractionContext } from './skill-extractor.js'
 import { SkillReviewEngine } from './state-machine.js'
 import { registerMemoryTools, type MemoryToolContext } from './tools.js'
@@ -31,11 +32,13 @@ export type { MemoryRecord, MemoryStatus, MemoryType } from './store.js'
 export function registerMemoryFeatures(ctx: MemoryHostContext): void {
   const store = new MemoryStore()
   const events = new MemoryEventHub()
+  const strategyHooks = createStrategyHooks(ctx, store)
   const reviewEngine = new SkillReviewEngine(
     store,
     events,
     createLlmReviewDriver(ctx),
     createToolEvidenceSearch(ctx),
+    strategyHooks,
   )
   const dmaRunner = new DmaRunner(store, events, createHostDmaExplorer(ctx))
   registerDmaSchedule(ctx, dmaRunner)

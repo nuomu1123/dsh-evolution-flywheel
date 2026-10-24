@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Client 半：clarify dock + 记忆浏览器（设置页 / 侧边栏 / 主面板）。
  *
  * 行为约束：
@@ -1106,6 +1106,7 @@ const FILTER_TABS: Array<{ id: FilterTab; label: string }> = [
   { id: 'debate', label: '辩论空间' },
   { id: 'audit', label: '自我审计' },
   { id: 'model', label: '思维模型' },
+  { id: 'strategy', label: '方法论库' },
 ]
 
 const MEMORY_PULSE_CSS = `
@@ -1387,8 +1388,16 @@ function MemoryExplorerPage() {
         throw new Error(typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`)
       }
       const item = body.item as MemoryItem
-      setItems((previous: MemoryItem[]) => [item, ...previous.filter(existing => existing.id !== item.id)])
-      setActiveTab('model')
+      const extras: MemoryItem[] = []
+      if (body.strategy !== undefined) extras.push(body.strategy as MemoryItem)
+      if (body.rule !== undefined) extras.push(body.rule as MemoryItem)
+      const addedIds = new Set([item.id, ...extras.map(extra => extra.id)])
+      setItems((previous: MemoryItem[]) => [
+        ...extras,
+        item,
+        ...previous.filter(existing => !addedIds.has(existing.id)),
+      ])
+      setActiveTab(extras.length > 0 ? 'strategy' : 'model')
     } catch (caught) {
       setError((caught as Error)?.message || '提炼模型失败')
     } finally {
@@ -1766,6 +1775,15 @@ function MemoryExplorerPage() {
         h('span', { key: 'note', style: memoryStyles.auditReason }, '规则审计，仅给建议，不会自动删除。'),
       ])
       : null,
+    activeTab === 'strategy'
+      ? h('div', { key: 'strategy-banner', style: memoryStyles.auditBanner }, [
+        h('span', { key: 'title', style: memoryStyles.auditBannerTitle }, '方法论库'),
+        h('span', { key: 'summary', style: memoryStyles.auditBannerText },
+          `小提炼反思 ${items.filter((item: MemoryItem) => item.type === 'extraction_strategy' && item.strategyStage === 'small').length} 条 · 大提炼反思 ${items.filter((item: MemoryItem) => item.type === 'extraction_strategy' && item.strategyStage === 'large').length} 条 · 融合法则 ${items.filter((item: MemoryItem) => item.type === 'extraction_strategy' && item.rule === true).length} 条`),
+        h('span', { key: 'note', style: memoryStyles.auditReason },
+          '提炼前自动注入最近最成功的 3 条策略；融合法则需人类裁决后，才会以最高优先级进入 System Prompt。'),
+      ])
+      : null,
     h('div', { key: 'toolbar', style: memoryStyles.toolbar }, [
       h('input', {
         key: 'search',
@@ -1790,7 +1808,7 @@ function MemoryExplorerPage() {
         style: memoryStyles.button,
         disabled: distilling,
         onClick: () => { void distill() },
-      }, distilling ? '提炼中…' : '提炼模型'),
+      }, distilling ? '大提炼中…' : '大提炼（模型+策略）'),
       ...(['compact', 'standard', 'large'] as const).map(level => h('button', {
         key: `density-${level}`,
         type: 'button',
@@ -1861,7 +1879,16 @@ function MemoryExplorerPage() {
                     borderColor: '#9333ea',
                     backgroundColor: 'rgba(147, 51, 234, 0.07)',
                   }
-                  : busy
+                  : item.type === 'extraction_strategy'
+                    ? {
+                      ...memoryStyles.card,
+                      borderColor: item.rule === true ? '#0891b2' : '#0e7490',
+                      ...(item.rule === true ? { borderWidth: '2px' } : {}),
+                      backgroundColor: item.status === 'approved'
+                        ? 'rgba(8, 145, 178, 0.06)'
+                        : 'rgba(8, 145, 178, 0.12)',
+                    }
+                    : busy
                     ? {
                       ...memoryStyles.card,
                       borderColor: '#2563eb',
@@ -1945,6 +1972,27 @@ function MemoryExplorerPage() {
               ? h('div', { key: 'speculative', style: memoryStyles.detail }, [
                 `学科：${item.discipline ?? '未标注'}`,
                 item.topic !== undefined ? `话题：${item.topic}` : null,
+              ].filter(Boolean).join('\n'))
+              : null,
+            isExpanded && item.type === 'extraction_strategy'
+              ? h('div', { key: 'strategy-detail', style: memoryStyles.detail }, [
+                item.thinkingModel !== undefined ? `思维模型：${item.thinkingModel}` : null,
+                item.analogyReason !== undefined ? `类比理由：${item.analogyReason}` : null,
+                item.effectiveFor !== undefined ? `最适用于：${item.effectiveFor}` : null,
+                `成功 ${item.successCount ?? 0} 次 · 被注入 ${item.appliedCount ?? 0} 次${item.lastAppliedAt === undefined ? '' : ` · 最近 ${formatMemoryTime(item.lastAppliedAt)}`}`,
+                item.rule === true
+                  ? '类型：跨域映射法则（由多条策略融合产生，人类裁决后以最高优先级注入）'
+                  : item.strategyStage === 'small'
+                    ? '来源环节：小提炼（四段式审阅/辩论）'
+                    : item.strategyStage === 'large'
+                      ? '来源环节：大提炼（睡眠巩固）'
+                      : '来源环节：未标注',
+                item.mergedFrom !== undefined && item.mergedFrom.length > 0
+                  ? `融合来源：${item.mergedFrom.length} 条策略`
+                  : null,
+                item.confidence === undefined
+                  ? null
+                  : `模型自评置信度：${Math.round(item.confidence * 100)}%`,
               ].filter(Boolean).join('\n'))
               : null,
             isExpanded && item.trace !== undefined && item.trace.length > 0

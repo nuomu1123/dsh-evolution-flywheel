@@ -46,7 +46,7 @@
 
 诚实说明：子母对抗是**同一个模型扮演双方**，不是两个独立 Agent；自我审计目前是**规则**，不是 LLM 语义判断；记忆是**本地明文 JSONL**，不加密。
 
-1.0.0，MIT，88 项测试，单包 DSH 插件。
+1.0.0，MIT，102 项测试，单包 DSH 插件。
 
 仓库：https://github.com/nuomu1123/dsh-evolution-flywheel
 npm：尚未发布
@@ -79,7 +79,7 @@ npm：尚未发布
    - 规则审计不是语义审计；
    - 记忆明文存储的隐私边界。
 4. **结果与限制**
-   - 88 项测试、1.0.0、MIT；
+   - 102 项测试、1.0.0、MIT；
    - 已知未做：虚拟滚动、标签检索、真正的多模型对抗。
 
 ## 三、Twitter / X
@@ -93,7 +93,7 @@ npm：尚未发布
 4. It also goes on late-night interdisciplinary walks. The output is marked speculative, and a human must adopt it.
 5. To stop it from burning money at 3am, I added a token fuse and a daily budget. Now it checks the bill before thinking.
 6. Honest limits: the debate is one model playing both sides; self-audit is rule-based; memory is local plaintext JSONL.
-7. 1.0.0, MIT, 88 tests, single DSH plugin. Repo: https://github.com/nuomu1123/dsh-evolution-flywheel
+7. 1.0.0, MIT, 102 tests, single DSH plugin. Repo: https://github.com/nuomu1123/dsh-evolution-flywheel
 
 ## 四、GitHub Topics
 
@@ -126,5 +126,5 @@ gh repo edit --add-topic agent-memory,dsh-plugin,deepseek-harness,self-evolving,
 - [x] 替换 README 与本文的仓库地址（npm 包待发布后替换 `<你的 npm 包地址>`）
 - [ ] 补 3 张截图：记忆面板、辩论空间、自我审计
 - [ ] npm 包名可用（已确认 404）
-- [ ] `pnpm test` 88/88
+- [x] `pnpm test` 102/102
 - [ ] 发帖后 24 小时内回复评论，不要只丢链接
