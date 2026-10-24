@@ -2126,6 +2126,9 @@ function MemoryExplorerPage() {
                 const section = (title: string, lines: string[]): string =>
                   lines.length === 0 ? '' : `【${title}】\n${lines.join('\n')}`
                 const text = [
+                  payload.quality === undefined
+                    ? ''
+                    : `历史采纳率：${Math.round(payload.quality.approvalRate * 100)}%（批准 ${payload.quality.approved} / 否决 ${payload.quality.rejected}）`,
                   payload.summary,
                   section('归档候选', payload.archive.map(entry => `- ${entry.content}（${entry.reason}）`)),
                   section('高价值', payload.highValue.map(entry => `- ${entry.content}（${entry.reason}）`)),

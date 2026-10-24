@@ -20,6 +20,17 @@ export interface CurationItem {
   reason: string
 }
 
+export interface CurationQuality {
+  approved: number
+  rejected: number
+  pending: number
+  total: number
+  /** 已裁决报告的采纳率 0-1；无裁决时为 0。 */
+  approvalRate: number
+  /** 最近几条否决理由，供下轮整理引用。 */
+  rejectionReasons: string[]
+}
+
 export interface CurationReportPayload {
   trigger: CurationTrigger
   generatedAt: string
@@ -36,6 +47,7 @@ export interface CurationReportPayload {
     highSalience: number
     undecided: number
   }
+  quality?: CurationQuality
   summary: string
 }
 
@@ -97,6 +109,31 @@ function similarGroups(active: readonly MemoryRecord[]): Array<{ ids: string[]; 
     if (groups.length >= 10) break
   }
   return groups
+}
+
+/** 已裁决报告的采纳率与最近否决理由：报告质量的唯一验收尺子。 */
+export function summarizeCurationQuality(items: readonly MemoryRecord[]): CurationQuality {
+  const reports = items.filter(item => item.type === 'curation_report')
+  const approved = reports.filter(item => item.status === 'approved').length
+  const rejected = reports.filter(item => item.status === 'rejected').length
+  const pending = reports.length - approved - rejected
+  const rejectionReasons = reports
+    .filter(item => item.status === 'rejected')
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .map(item => (item.trace ?? [])
+      .filter(step => step.includes('理由：'))
+      .at(-1) ?? '')
+    .filter(reason => reason !== '')
+    .slice(0, 5)
+  const decided = approved + rejected
+  return {
+    approved,
+    rejected,
+    pending,
+    total: reports.length,
+    approvalRate: decided === 0 ? 0 : approved / decided,
+    rejectionReasons,
+  }
 }
 
 /** 纯规则生成报告；不调用 LLM，保证离线可用、零成本。 */
@@ -179,6 +216,7 @@ export function buildCurationReport(
     merge,
     risks,
     stats: { fresh, faded, duplicates: merge.length, highSalience, undecided },
+    quality: summarizeCurationQuality(items),
     summary,
   }
 }

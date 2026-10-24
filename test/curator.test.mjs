@@ -4,7 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildCurationReport, parseCurationPayload, shouldRunCuration } from '../lib/memory/curator.js'
+import { buildCurationReport, parseCurationPayload, shouldRunCuration, summarizeCurationQuality } from '../lib/memory/curator.js'
 
 const NOW = Date.parse('2026-10-24T12:00:00Z')
 const DAY = 24 * 60 * 60 * 1000
@@ -71,6 +71,24 @@ test('阈值触发：首次需 20 条，24 小时内不重复，新增 20 条才
   assert.equal(shouldRunCuration(many, NOW - 60 * 60 * 1000, NOW), false)
   const recent = many.map(entry => ({ ...entry, createdAt: new Date(NOW - DAY).toISOString() }))
   assert.equal(shouldRunCuration(recent, NOW - 2 * DAY, NOW), true)
+})
+
+test('整理质量：采纳率与最近否决理由可统计', () => {
+  const approved = { ...item('r1'), type: 'curation_report', status: 'approved', trace: ['人类裁决：批准'] }
+  const rejected = {
+    ...item('r2'),
+    type: 'curation_report',
+    status: 'rejected',
+    trace: ['人类裁决：否决；理由：误判了仍有用的记忆'],
+  }
+  const pending = { ...item('r3'), type: 'curation_report', status: 'suggested' }
+  const quality = summarizeCurationQuality([approved, rejected, pending])
+  assert.equal(quality.approved, 1)
+  assert.equal(quality.rejected, 1)
+  assert.equal(quality.pending, 1)
+  assert.equal(quality.total, 3)
+  assert.equal(quality.approvalRate, 0.5)
+  assert.match(quality.rejectionReasons[0], /误判/)
 })
 
 test('报告 JSON 解析：损坏时安全返回 undefined', () => {

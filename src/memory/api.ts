@@ -20,7 +20,7 @@ import { summarizeUsage } from './usage.js'
 import type { SkillReviewEngine } from './state-machine.js'
 import { createStrategyHooks } from './strategy.js'
 import type { MemoryContextBase } from './context.js'
-import { archiveIdsOf, buildCurationReport, parseCurationPayload } from './curator.js'
+import { archiveIdsOf, buildCurationReport, parseCurationPayload, summarizeCurationQuality } from './curator.js'
 import type { MemoryStore } from './store.js'
 import { distillModel } from './model-distill.js'
 
@@ -208,7 +208,12 @@ export async function handleMemoryApi(
         sendJson(res, 200, { ok: false, error: '还没有整理报告，先运行一次整理' })
         return
       }
-      sendJson(res, 200, { ok: true, report, payload: parseCurationPayload(report.reportJson) })
+      sendJson(res, 200, {
+        ok: true,
+        report,
+        payload: parseCurationPayload(report.reportJson),
+        quality: summarizeCurationQuality(items),
+      })
       return
     }
 
