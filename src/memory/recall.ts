@@ -6,6 +6,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { MemoryContextBase } from './context.js'
+import { isFaded, memorySalience, perceptionLabel } from './decay.js'
 import { approvedRules, rankStrategies } from './strategy.js'
 import type { MemoryRecord, MemoryStore } from './store.js'
 
@@ -57,11 +58,14 @@ function signatureMatches(skill: MemoryRecord, text: string): boolean {
   return tokens.some(token => haystack.includes(token))
 }
 
-/** 已确认记忆摘要：提炼法则/方法论 + preference/fact + 排错经验，限制长度避免膨胀。 */
+/** 已确认记忆摘要：提炼法则/方法论 + preference/fact + 排错经验，按遗忘曲线褪色。 */
 export function buildDigest(items: readonly MemoryRecord[]): string {
-  const approved = items.filter(item => item.status === 'approved')
-  const rules = approvedRules(items)
-  const strategies = rankStrategies(items, 3)
+  const now = Date.now()
+  // 已褪色的记忆不再进入系统提示：留在库里，但不再污染当前世界模型。
+  const active = items.filter(item => !isFaded(item, now))
+  const approved = active.filter(item => item.status === 'approved')
+  const rules = approvedRules(active)
+  const strategies = rankStrategies(active, 3)
   const basics = approved
     .filter(item => item.type === 'preference' || item.type === 'fact')
     .slice(0, 12)
@@ -81,7 +85,7 @@ export function buildDigest(items: readonly MemoryRecord[]): string {
     lines.push('【跨域映射法则（人类已裁决，最高优先级）】')
     for (const item of rules) {
       const reason = item.analogyReason === undefined ? '' : `（依据：${item.analogyReason.slice(0, 80)}）`
-      lines.push(`- ${item.content.slice(0, 120)}${reason}`)
+      lines.push(`- ${item.content.slice(0, 120)}${reason}（${perceptionLabel(item, now)}）`)
     }
   }
   if (strategies.length > 0) {
@@ -90,21 +94,24 @@ export function buildDigest(items: readonly MemoryRecord[]): string {
       const status = item.status === 'approved' ? '已裁决' : '候选'
       const model = item.thinkingModel === undefined ? '' : `｜思维模型：${item.thinkingModel}`
       const applies = item.effectiveFor === undefined ? '' : `｜适用：${item.effectiveFor.slice(0, 50)}`
-      lines.push(`- [${status}] ${item.content.slice(0, 60)}${model}${applies}`)
+      lines.push(`- [${status}] ${item.content.slice(0, 60)}${model}${applies}（${perceptionLabel(item, now)}）`)
     }
   }
   for (const item of basics) {
-    lines.push(`- ${item.type === 'preference' ? '偏好' : '事实'}：${item.content.slice(0, 160)}`)
+    lines.push(`- ${item.type === 'preference' ? '偏好' : '事实'}：${item.content.slice(0, 160)}（${perceptionLabel(item, now)}）`)
   }
   for (const item of models) {
     const pattern = (item.metaInsight ?? '').slice(0, 80)
     const applies = (item.resolution ?? '').slice(0, 80)
     const counter = (item.counterexample ?? '').slice(0, 60)
-    lines.push(`- 思维模型：${item.content.slice(0, 40)} → ${pattern}；适用：${applies}${counter === '' ? '' : `；反例：${counter}`}`)
+    lines.push(`- 思维模型：${item.content.slice(0, 40)} → ${pattern}；适用：${applies}${counter === '' ? '' : `；反例：${counter}`}（${perceptionLabel(item, now)}）`)
   }
   for (const item of skills) {
-    lines.push(`- 排错经验：${(item.errorSignature ?? item.content).slice(0, 80)} → ${(item.resolution ?? '').slice(0, 120)}`)
+    const salience = memorySalience(item)
+    const prefix = salience >= 0.8 ? '⚠️ 致命红线 · ' : salience >= 0.55 ? '高显著 · ' : ''
+    lines.push(`- 排错经验：${prefix}${(item.errorSignature ?? item.content).slice(0, 80)} → ${(item.resolution ?? '').slice(0, 120)}（${perceptionLabel(item, now)}）`)
   }
+  lines.push('【时间感】记忆会随时间褪色；保留率低或标有“建议重新验证”时，先跑最小验证，再用 memory_probe 记录结论，不要直接沿用旧经验。')
   const digest = lines.join('\n')
   return digest.length > 2000 ? `${digest.slice(0, 2000)}\n[记忆摘要已截断]` : digest
 }
@@ -141,11 +148,24 @@ export function registerMemoryRecall(ctx: MemoryRecallContext, store: MemoryStor
     return typeof agent === 'object' && agent !== null ? digests.get(agent) ?? '' : ''
   }
   let digestCache: { at: number; text: string } | undefined
+  let lastRecallTouch = 0
   const refreshDigest = async (agent: object): Promise<void> => {
     try {
       const now = Date.now()
       if (digestCache === undefined || now - digestCache.at > 3_000) {
-        digestCache = { at: now, text: buildDigest(await store.list()) }
+        const items = await store.list()
+        digestCache = { at: now, text: buildDigest(items) }
+        // 每 5 分钟最多记录一次“被召回”，作为遗忘曲线的基准，避免写放大。
+        if (now - lastRecallTouch > 300_000) {
+          lastRecallTouch = now
+          const recalled = items
+            .filter(item => item.status === 'approved' && !isFaded(item, now))
+            .slice(0, 20)
+            .map(item => item.id)
+          void store.touchRecalled(recalled).catch(error => {
+            console.error('[dsh-evolution-flywheel] recall touch failed:', error)
+          })
+        }
       }
       digests.set(agent, digestCache.text)
       const id = agentIdOf(agent)

@@ -56,6 +56,11 @@ export interface MemoryItem {
   rule?: boolean
   mergedFrom?: string[]
   confidence?: number
+  lastSeenAt?: string
+  lastRecalledAt?: string
+  count?: number
+  humanInterventions?: number
+  verifiedAt?: string
 }
 
 export interface TimelineNode {

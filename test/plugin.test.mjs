@@ -89,12 +89,13 @@ test('apply 注册 memory_ping、memory_list、memory_delete 与 /clarify 命令
   const { ctx, registered, commands, routes, listeners } = createMockContext()
   apply(ctx)
 
-  assert.equal(registered.length, 6)
+  assert.equal(registered.length, 7)
   assert.deepEqual(registered.map(definition => definition.name).sort(), [
     'memory_approve',
     'memory_delete',
     'memory_list',
     'memory_ping',
+    'memory_probe',
     'memory_search',
     'memory_update_resolution',
   ])
@@ -141,6 +142,7 @@ test('effect disposer 会注销工具、命令与 HTTP 路由', () => {
     'memory_delete',
     'memory_list',
     'memory_ping',
+    'memory_probe',
     'memory_search',
     'memory_update_resolution',
     'route:/memory-explorer',
@@ -165,7 +167,7 @@ test('命令注册失败只写 stderr，记忆工具仍可用', () => {
 
   assert.equal(calls.length, 1)
   assert.match(String(calls[0][0]), /clarify command registration failed/)
-  assert.equal(registered.length, 6)
+  assert.equal(registered.length, 7)
 })
 
 test('成功加载不会自动调用审计日志', () => {

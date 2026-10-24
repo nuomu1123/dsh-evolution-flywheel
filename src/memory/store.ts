@@ -85,6 +85,12 @@ export interface MemoryRecord {
   tokensUsed?: number
   /** 共享世界模型作用域：global=统一记忆池（默认）；main/sub 预留给未来分区。 */
   scope?: 'global' | 'main' | 'sub'
+  /** 最近一次被召回注入的时间（遗忘曲线基准）。 */
+  lastRecalledAt?: string
+  /** 最近一次被主动探针验证的时间。 */
+  verifiedAt?: string
+  /** 进入人类裁决的次数（显著性来源）。 */
+  humanInterventions?: number
   /** 提炼策略：本次提炼使用的思维模型（例如“系统韧性”“反馈回路”）。 */
   thinkingModel?: string
   /** 提炼策略：为什么这样类比（跨域映射的推理依据）。 */
@@ -263,6 +269,11 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
     ...(value.scope === 'global' || value.scope === 'main' || value.scope === 'sub'
       ? { scope: value.scope }
       : { scope: 'global' }),
+    ...(typeof value.lastRecalledAt === 'string' ? { lastRecalledAt: value.lastRecalledAt } : {}),
+    ...(typeof value.verifiedAt === 'string' ? { verifiedAt: value.verifiedAt } : {}),
+    ...(typeof value.humanInterventions === 'number'
+      ? { humanInterventions: Math.max(0, Math.trunc(value.humanInterventions)) }
+      : {}),
     ...(typeof value.thinkingModel === 'string' ? { thinkingModel: sanitizeQuiet(value.thinkingModel, 120) } : {}),
     ...(typeof value.analogyReason === 'string' ? { analogyReason: sanitizeQuiet(value.analogyReason, 500) } : {}),
     ...(typeof value.effectiveFor === 'string' ? { effectiveFor: sanitizeQuiet(value.effectiveFor, 300) } : {}),
@@ -564,6 +575,11 @@ export class MemoryStore {
         ...(patch.confidence !== undefined
           ? { confidence: Math.max(0, Math.min(1, patch.confidence)) }
           : {}),
+        ...(patch.lastRecalledAt !== undefined ? { lastRecalledAt: patch.lastRecalledAt } : {}),
+        ...(patch.verifiedAt !== undefined ? { verifiedAt: patch.verifiedAt } : {}),
+        ...(patch.humanInterventions !== undefined
+          ? { humanInterventions: Math.max(0, Math.trunc(patch.humanInterventions)) }
+          : {}),
       }
       const next = [...items]
       next[index] = updated
@@ -601,6 +617,24 @@ export class MemoryStore {
         for (const item of touched) this.emit({ type: 'memory:updated', item })
       }
       return touched
+    })
+  }
+
+  /** 记录这些记忆被召回注入：只更新 lastRecalledAt，作为遗忘曲线的基准。 */
+  touchRecalled(ids: readonly string[]): Promise<void> {
+    const keys = [...new Set(ids.map(id => id.trim()).filter(id => id !== ''))]
+    if (keys.length === 0) return Promise.resolve()
+    return this.runExclusive(async () => {
+      await this.ensureSeeded()
+      const items = await this.readAll()
+      const now = new Date().toISOString()
+      let changed = false
+      const next = items.map(item => {
+        if (!keys.includes(item.id)) return item
+        changed = true
+        return { ...item, lastRecalledAt: now }
+      })
+      if (changed) await this.writeAll(next)
     })
   }
 

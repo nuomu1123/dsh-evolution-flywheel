@@ -30,6 +30,7 @@ import {
   type FilterTab,
   type MemoryItem,
 } from './logic.js'
+import { memorySalience, perceptionLabel } from '../memory/decay.js'
 
 declare const require: (id: string) => any
 
@@ -1972,7 +1973,7 @@ function MemoryExplorerPage() {
         return h('div', { key: item.id, style: { ...cardStyle, ...CARD_DENSITY[density as keyof typeof CARD_DENSITY] } }, [
           h('div', { key: 'main', style: memoryStyles.itemMain }, [
             h('div', { key: 'provenance', style: memoryStyles.provenance },
-              `创建 ${formatMemoryTime(item.createdAt)} · 来源 ${originLabel(item.origin)}${item.discipline === undefined ? '' : ` · ${item.discipline}`}`),
+              `创建 ${formatMemoryTime(item.createdAt)} · 来源 ${originLabel(item.origin)}${item.discipline === undefined ? '' : ` · ${item.discipline}`} · ${perceptionLabel(item)}`),
             h('div', {
               key: 'content',
               style: isExpanded
@@ -2178,6 +2179,11 @@ function MemoryExplorerPage() {
               item.discipline !== undefined
                 ? h('span', { key: 'discipline', style: memoryStyles.badgeSpeculative }, item.discipline)
                 : null,
+              memorySalience(item) >= 0.8
+                ? h('span', { key: 'salience', style: memoryStyles.badgeSpeculative }, '⚠️ 致命红线')
+                : memorySalience(item) >= 0.55
+                  ? h('span', { key: 'salience', style: memoryStyles.badge }, '高显著')
+                  : null,
               busy ? h('span', { key: 'loader', style: memoryStyles.loader }, '思考中…') : null,
               h('span', { key: 'time' }, formatMemoryTime(item.createdAt)),
             ]),

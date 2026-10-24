@@ -143,8 +143,62 @@ export function memoryApproveTool(store: MemoryStore): ToolDefinitionLike {
   }
 }
 
-export function memoryUpdateResolutionTool(store: MemoryStore): ToolDefinitionLike {
+export function memoryProbeTool(store: MemoryStore): ToolDefinitionLike {
   return {
+    name: 'memory_probe',
+    description: 'Record the result of an active probe (a minimal experiment, console.log or test) that verifies or refutes a memory. Updates verifiedAt and confidence, appends a trace step, and returns the updated memory.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Memory id to verify.' },
+        hypothesis: { type: 'string', description: 'What was uncertain and is being tested.' },
+        evidence: { type: 'string', description: 'Observed result: stdout, exit code, or key output.' },
+        verified: { type: 'boolean', description: 'true if the memory still holds; false if reality contradicted it.' },
+      },
+      required: ['id', 'hypothesis', 'evidence', 'verified'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: renderJson,
+    },
+    async execute(args: unknown): Promise<{ ok: true; id: string; item: unknown }> {
+      const record = (args ?? {}) as {
+        id?: unknown
+        hypothesis?: unknown
+        evidence?: unknown
+        verified?: unknown
+      }
+      const id = typeof record.id === 'string' ? record.id.trim() : ''
+      const hypothesis = typeof record.hypothesis === 'string' ? record.hypothesis.trim().slice(0, 300) : ''
+      const evidence = typeof record.evidence === 'string' ? record.evidence.trim().slice(0, 1000) : ''
+      const verified = record.verified === true
+      if (id === '' || hypothesis === '' || evidence === '') {
+        throw new Error('memory_probe requires id, hypothesis and evidence')
+      }
+      const current = (await store.list()).find(item => item.id === id)
+      if (current === undefined) throw new Error('memory_probe: memory not found')
+      const now = new Date().toISOString()
+      const base = current.confidence ?? 0.5
+      const nextConfidence = Math.max(0, Math.min(1, verified ? base + 0.2 : base - 0.3))
+      const item = await store.update(id, {
+        verifiedAt: now,
+        confidence: nextConfidence,
+        trace: [
+          ...(current.trace ?? []),
+          `探针（${now}）：${hypothesis} → ${verified ? '验证成立' : '被现实推翻'}；结果：${evidence.slice(0, 200)}`,
+        ].slice(-10),
+      })
+      if (item === undefined) throw new Error('memory_probe: update failed')
+      console.error(
+        `[dsh-evolution-flywheel] 主动探针：${hypothesis.slice(0, 60)} → ${verified ? '成立' : '推翻'}`,
+      )
+      return { ok: true, id, item }
+    },
+  }
+}
+
+export function memoryUpdateResolutionTool(store: MemoryStore): ToolDefinitionLike {  return {
     name: 'memory_update_resolution',
     description: 'Update the resolution text of one memory by id. Returns { ok, id, item }.',
     parameters: {
@@ -180,6 +234,7 @@ export function registerMemoryTools(ctx: MemoryToolContext, store: MemoryStore):
     memoryDeleteTool(store),
     memoryApproveTool(store),
     memoryUpdateResolutionTool(store),
+    memoryProbeTool(store),
   ]) {
     try {
       ctx.effect(() => {

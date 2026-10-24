@@ -194,6 +194,7 @@ export class SkillReviewEngine {
           await this.patch(key, {
             status: 'human_intervention',
             debateSummary,
+            humanInterventions: (record.humanInterventions ?? 0) + 1,
             ...(challenge !== '' ? { challenge } : {}),
             ...(debateRounds.length > 0 ? { debateRounds } : {}),
             ...(debate.tokensUsed !== undefined ? { debateTokens: debate.tokensUsed } : {}),
@@ -293,9 +294,11 @@ export class SkillReviewEngine {
   }
 
   private async humanIntervention(id: string, reason: string): Promise<MemoryRecord | undefined> {
+    const current = (await this.store.list()).find(item => item.id === id)
     return this.patch(id, {
       status: 'human_intervention',
       debateSummary: sanitize(reason, 800),
+      humanInterventions: (current?.humanInterventions ?? 0) + 1,
     })
   }
 
