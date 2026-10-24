@@ -31,6 +31,7 @@ import {
   type MemoryItem,
 } from './logic.js'
 import { memorySalience, perceptionLabel } from '../memory/decay.js'
+import { parseCurationPayload } from '../memory/curator.js'
 
 declare const require: (id: string) => any
 
@@ -1118,6 +1119,7 @@ const FILTER_TABS: Array<{ id: FilterTab; label: string }> = [
   { id: 'audit', label: '自我审计' },
   { id: 'model', label: '思维模型' },
   { id: 'strategy', label: '方法论库' },
+  { id: 'curation', label: '整理报告' },
 ]
 
 const MEMORY_PULSE_CSS = `
@@ -1224,6 +1226,8 @@ function MemoryExplorerPage() {
   const [auditEntries, setAuditEntries] = React.useState(null as AuditEntry[] | null)
   const [auditLoading, setAuditLoading] = React.useState(false)
   const [distilling, setDistilling] = React.useState(false)
+  const [curationDeciding, setCurationDeciding] = React.useState(null)
+  const [curating, setCurating] = React.useState(false)
   const [density, setDensity] = React.useState('standard')
   const pageRef = React.useRef(null)
   const loadSeqRef = React.useRef(0)
@@ -1420,6 +1424,60 @@ function MemoryExplorerPage() {
       setError((caught as Error)?.message || '提炼模型失败')
     } finally {
       setDistilling(false)
+    }
+  }
+
+  const runCuration = async () => {
+    setCurating(true)
+    setError('')
+    try {
+      const response = await fetch(`${MEMORY_API}/curation/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+      const body = await response.json()
+      if (!response.ok || body?.ok !== true) {
+        throw new Error(typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`)
+      }
+      const report = body.report as MemoryItem
+      setItems((previous: MemoryItem[]) =>
+        [report, ...previous.filter(item => item.id !== report.id)])
+      setActiveTab('curation')
+      setDetailId(null)
+    } catch (caught) {
+      setError((caught as Error)?.message || '整理失败')
+    } finally {
+      setCurating(false)
+    }
+  }
+
+  const curationDecide = async (item: MemoryItem, decision: 'approve' | 'reject') => {
+    const reason = (drafts[item.id] ?? '').trim()
+    if (decision === 'reject' && [...reason].length < 10) {
+      setError('否决整理报告必须给出至少 10 个字的理由')
+      return
+    }
+    setCurationDeciding(`${item.id}:${decision}`)
+    setError('')
+    try {
+      const response = await fetch(`${MEMORY_API}/curation/decision`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: item.id, decision, reason }),
+      })
+      const body = await response.json()
+      if (!response.ok || body?.ok !== true) {
+        throw new Error(typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`)
+      }
+      setItems((previous: MemoryItem[]) =>
+        previous.map(existing => existing.id === item.id ? body.report : existing))
+      setDetailId(null)
+      void load()
+    } catch (caught) {
+      setError((caught as Error)?.message || '整理裁决失败')
+    } finally {
+      setCurationDeciding(null)
     }
   }
 
@@ -1855,6 +1913,13 @@ function MemoryExplorerPage() {
         disabled: distilling,
         onClick: () => { void distill() },
       }, distilling ? '大提炼中…' : '大提炼（模型+策略）'),
+      h('button', {
+        key: 'curation-run',
+        type: 'button',
+        style: memoryStyles.button,
+        disabled: curating,
+        onClick: () => { void runCuration() },
+      }, curating ? '整理中…' : '运行整理'),
       ...(['compact', 'standard', 'large'] as const).map(level => h('button', {
         key: `density-${level}`,
         type: 'button',
@@ -2052,6 +2117,24 @@ function MemoryExplorerPage() {
                   : `模型自评置信度：${Math.round(item.confidence * 100)}%`,
               ].filter(Boolean).join('\n'))
               : null,
+            isExpanded && item.type === 'curation_report'
+              ? (() => {
+                const payload = parseCurationPayload(item.reportJson)
+                if (payload === undefined) {
+                  return h('div', { key: 'curation-empty', style: memoryStyles.detail }, '报告内容缺失或损坏')
+                }
+                const section = (title: string, lines: string[]): string =>
+                  lines.length === 0 ? '' : `【${title}】\n${lines.join('\n')}`
+                const text = [
+                  payload.summary,
+                  section('归档候选', payload.archive.map(entry => `- ${entry.content}（${entry.reason}）`)),
+                  section('高价值', payload.highValue.map(entry => `- ${entry.content}（${entry.reason}）`)),
+                  section('重复组', payload.merge.map(entry => `- ${entry.reason}`)),
+                  section('风险', payload.risks.map(risk => `- ${risk}`)),
+                ].filter(part => part !== '').join('\n\n')
+                return h('div', { key: 'curation-report', style: memoryStyles.detail }, text)
+              })()
+              : null,
             isExpanded && item.trace !== undefined && item.trace.length > 0
               ? h('div', { key: 'trace', style: memoryStyles.traceBox }, [
                 h('div', { key: 'title', style: memoryStyles.traceTitle }, '提炼过程'),
@@ -2189,6 +2272,37 @@ function MemoryExplorerPage() {
             ]),
           ]),
           h('div', { key: 'actions', style: memoryStyles.actions }, [
+            item.type === 'curation_report' && item.status !== 'approved' && item.status !== 'rejected'
+              ? h('div', { key: 'curation-actions', style: { display: 'flex', flexDirection: 'column', gap: '6px', width: '100%' } }, [
+                h('textarea', {
+                  key: 'reason',
+                  style: memoryStyles.resolutionInput,
+                  rows: 2,
+                  value: drafts[item.id] ?? '',
+                  placeholder: '否决必须写理由（至少 10 字）；批准可留空',
+                  onChange: (event: { target: { value: string } }) => {
+                    const value = event.target.value
+                    setDrafts((previous: Record<string, string>) => ({ ...previous, [item.id]: value }))
+                  },
+                }),
+                h('div', { key: 'buttons', style: memoryStyles.actions }, [
+                  h('button', {
+                    key: 'approve',
+                    type: 'button',
+                    style: memoryStyles.approve,
+                    disabled: curationDeciding !== null,
+                    onClick: () => { void curationDecide(item, 'approve') },
+                  }, curationDeciding === `${item.id}:approve` ? '执行中…' : '批准并归档'),
+                  h('button', {
+                    key: 'reject',
+                    type: 'button',
+                    style: memoryStyles.delete,
+                    disabled: curationDeciding !== null,
+                    onClick: () => { void curationDecide(item, 'reject') },
+                  }, curationDeciding === `${item.id}:reject` ? '否决中…' : '否决（必须写理由）'),
+                ]),
+              ])
+              : null,
             item.type === 'skill_error_fix' && activeTab !== 'debate' && hasDebateRecord(item)
               ? h('button', {
                 key: 'goto-debate',

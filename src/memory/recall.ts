@@ -61,8 +61,8 @@ function signatureMatches(skill: MemoryRecord, text: string): boolean {
 /** 已确认记忆摘要：提炼法则/方法论 + preference/fact + 排错经验，按遗忘曲线褪色。 */
 export function buildDigest(items: readonly MemoryRecord[]): string {
   const now = Date.now()
-  // 已褪色的记忆不再进入系统提示：留在库里，但不再污染当前世界模型。
-  const active = items.filter(item => !isFaded(item, now))
+  // 已褪色或已归档的记忆不再进入系统提示：留在库里，但不再污染当前世界模型。
+  const active = items.filter(item => item.archived !== true && !isFaded(item, now))
   const approved = active.filter(item => item.status === 'approved')
   const rules = approvedRules(active)
   const strategies = rankStrategies(active, 3)
@@ -159,7 +159,7 @@ export function registerMemoryRecall(ctx: MemoryRecallContext, store: MemoryStor
         if (now - lastRecallTouch > 300_000) {
           lastRecallTouch = now
           const recalled = items
-            .filter(item => item.status === 'approved' && !isFaded(item, now))
+            .filter(item => item.status === 'approved' && item.archived !== true && !isFaded(item, now))
             .slice(0, 20)
             .map(item => item.id)
           void store.touchRecalled(recalled).catch(error => {

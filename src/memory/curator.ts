@@ -1,0 +1,211 @@
+/**
+ * 整理 Agent（Curator）：把记忆池整理成一份给人类看的报告。
+ *
+ * 原则（按创世档案）：
+ * - 只提议、不自动执行：归档/合并/遗忘都要人类批准；
+ * - 否决必须给理由（API 层强制），理由写成负样本供下轮整理引用；
+ * - 第一版是规则引擎 + 可选 LLM 摘要，不依赖模型也能给出报告；
+ * - 单飞 + 预算门，后台运行不阻塞主会话。
+ */
+import { isFaded, memoryAgeDays, memoryFreshness, memorySalience } from './decay.js'
+import type { MemoryContextBase } from './context.js'
+import type { MemoryEventHub } from './events.js'
+import type { MemoryRecord, MemoryStore } from './store.js'
+
+export type CurationTrigger = 'threshold' | 'manual' | 'scheduled'
+
+export interface CurationItem {
+  id: string
+  content: string
+  reason: string
+}
+
+export interface CurationReportPayload {
+  trigger: CurationTrigger
+  generatedAt: string
+  total: number
+  keep: CurationItem[]
+  archive: CurationItem[]
+  highValue: CurationItem[]
+  merge: Array<{ ids: string[]; reason: string }>
+  risks: string[]
+  stats: {
+    fresh: number
+    faded: number
+    duplicates: number
+    highSalience: number
+    undecided: number
+  }
+  summary: string
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+const REJECTED_ARCHIVE_AFTER_DAYS = 30
+
+function excerpt(record: MemoryRecord): string {
+  const text = record.errorSignature ?? record.content
+  return text.replace(/\s+/gu, ' ').slice(0, 80)
+}
+
+/** 纯规则生成报告；不调用 LLM，保证离线可用、零成本。 */
+export function buildCurationReport(
+  items: readonly MemoryRecord[],
+  now = Date.now(),
+  trigger: CurationTrigger = 'manual',
+): CurationReportPayload {
+  const active = items.filter(item => item.archived !== true)
+  const keep: CurationItem[] = []
+  const archive: CurationItem[] = []
+  const highValue: CurationItem[] = []
+  const duplicateGroups = new Map<string, string[]>()
+  let fresh = 0
+  let faded = 0
+  let highSalience = 0
+
+  for (const item of active) {
+    const key = item.content.trim()
+    if (key !== '') {
+      const ids = duplicateGroups.get(key) ?? []
+      ids.push(item.id)
+      duplicateGroups.set(key, ids)
+    }
+    const salience = memorySalience(item)
+    const isOld = isFaded(item, now)
+    const retention = Math.round(memoryFreshness(item, now) * 100)
+    if (isOld) faded += 1
+    else fresh += 1
+    if (salience >= 0.8) highSalience += 1
+
+    // 分类互斥：高价值 > 归档候选 > 保留。
+    if (salience >= 0.8 || (item.successCount ?? 0) >= 2 || (item.count ?? 0) >= 3) {
+      highValue.push({
+        id: item.id,
+        content: excerpt(item),
+        reason: `显著性 ${salience.toFixed(2)}（干预 ${item.humanInterventions ?? 0} 次 / 重复 ${item.count ?? 1} 次）`,
+      })
+      continue
+    }
+    if (isOld || (item.status === 'rejected' && memoryAgeDays(item, now) >= REJECTED_ARCHIVE_AFTER_DAYS)) {
+      archive.push({
+        id: item.id,
+        content: excerpt(item),
+        reason: isOld ? `保留率 ${retention}%，已褪色` : '已驳回且超过 30 天',
+      })
+      continue
+    }
+    keep.push({
+      id: item.id,
+      content: excerpt(item),
+      reason: `保留率 ${retention}%，仍有效`,
+    })
+  }
+
+  const merge = [...duplicateGroups.entries()]
+    .filter(([, ids]) => ids.length >= 2)
+    .map(([content, ids]) => ({
+      ids,
+      reason: `内容完全重复：${content.slice(0, 60)}`,
+    }))
+
+  const undecided = active.filter(item =>
+    item.status === 'suggested' || item.status === 'staged' || item.status === 'under_review').length
+  const risks: string[] = []
+  if (faded > 0) risks.push(`${faded} 条记忆已褪色，建议确认后归档`)
+  if (undecided > 0) risks.push(`${undecided} 条记忆尚未裁决，长期停留会稀释注意力`)
+  if (active.length > 800) risks.push('记忆条数接近 1 MiB 文件上限，建议归档或导出')
+  if (merge.length > 0) risks.push(`${merge.length} 组内容完全重复，建议合并`)
+
+  const summary = `共 ${active.length} 条：保留 ${keep.length}，归档候选 ${archive.length}，高价值 ${highValue.length}，重复组 ${merge.length}，待裁决 ${undecided}。`
+  return {
+    trigger,
+    generatedAt: new Date(now).toISOString(),
+    total: active.length,
+    keep,
+    archive,
+    highValue,
+    merge,
+    risks,
+    stats: { fresh, faded, duplicates: merge.length, highSalience, undecided },
+    summary,
+  }
+}
+
+/** 阈值触发：距上次整理满 24h，且新增记忆 >= minNew 条。 */
+export function shouldRunCuration(
+  items: readonly MemoryRecord[],
+  lastRunAt: number | undefined,
+  now = Date.now(),
+  minNew = 20,
+  minIntervalMs = DAY_MS,
+): boolean {
+  if (lastRunAt !== undefined && now - lastRunAt < minIntervalMs) return false
+  if (lastRunAt === undefined) return items.filter(item => item.archived !== true).length >= minNew
+  const since = items.filter(item => {
+    const created = Date.parse(item.createdAt)
+    return Number.isFinite(created) && created > lastRunAt
+  }).length
+  return since >= minNew
+}
+
+/** 从报告 payload 中提取要归档的记忆 id。 */
+export function archiveIdsOf(payload: CurationReportPayload): string[] {
+  return [...new Set(payload.archive.map(item => item.id))]
+}
+
+/** 解析报告 JSON；损坏时返回 undefined。 */
+export function parseCurationPayload(text: string | undefined): CurationReportPayload | undefined {
+  if (text === undefined || text.trim() === '') return undefined
+  try {
+    const value: unknown = JSON.parse(text)
+    if (typeof value !== 'object' || value === null) return undefined
+    return value as CurationReportPayload
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 后台整理调度：每 30 分钟检查一次，满足阈值才生成报告。
+ * 只生成待裁决报告，不自动归档；单飞保护，失败只写日志。
+ */
+export function registerCurationSchedule(
+  ctx: MemoryContextBase,
+  store: MemoryStore,
+  events: MemoryEventHub,
+  intervalMs = 30 * 60_000,
+): void {
+  let running = false
+  const tick = async (): Promise<void> => {
+    if (running) return
+    try {
+      const items = await store.list()
+      const last = items
+        .filter(item => item.type === 'curation_report')
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
+      const parsed = last === undefined ? Number.NaN : Date.parse(last.createdAt)
+      if (!shouldRunCuration(items, Number.isFinite(parsed) ? parsed : undefined)) return
+      running = true
+      const payload = buildCurationReport(items, Date.now(), 'threshold')
+      const created = await store.appendSuggested(`整理报告：${payload.summary}`, 'curation_report')
+      if (created === undefined) return
+      const updated = await store.update(created.id, {
+        reportJson: JSON.stringify(payload),
+        origin: 'curation',
+        originDetail: '后台自动整理（待人类裁决）',
+        trace: [payload.summary, ...payload.risks].slice(0, 10),
+      })
+      events.publish({ type: 'memory:added', item: updated ?? created })
+    } catch (error) {
+      console.error('[dsh-evolution-flywheel] curation schedule failed:', error)
+    } finally {
+      running = false
+    }
+  }
+  const timer = setInterval(() => { void tick() }, intervalMs)
+  if (typeof timer.unref === 'function') timer.unref()
+  try {
+    ctx.effect(() => () => clearInterval(timer))
+  } catch {
+    clearInterval(timer)
+  }
+}

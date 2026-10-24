@@ -20,6 +20,7 @@ import { summarizeUsage } from './usage.js'
 import type { SkillReviewEngine } from './state-machine.js'
 import { createStrategyHooks } from './strategy.js'
 import type { MemoryContextBase } from './context.js'
+import { archiveIdsOf, buildCurationReport, parseCurationPayload } from './curator.js'
 import type { MemoryStore } from './store.js'
 import { distillModel } from './model-distill.js'
 
@@ -195,6 +196,103 @@ export async function handleMemoryApi(
         ...(strategy === undefined ? {} : { strategy }),
         ...(rule === undefined ? {} : { rule }),
       })
+      return
+    }
+
+    if (req.method === 'GET' && url.pathname === `${PREFIX}/api/curation/latest`) {
+      const items = await store.list()
+      const report = items
+        .filter(item => item.type === 'curation_report')
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
+      if (report === undefined) {
+        sendJson(res, 200, { ok: false, error: '还没有整理报告，先运行一次整理' })
+        return
+      }
+      sendJson(res, 200, { ok: true, report, payload: parseCurationPayload(report.reportJson) })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/curation/run`) {
+      if (!requireJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
+        return
+      }
+      const items = await store.list()
+      const payload = buildCurationReport(items, Date.now(), 'manual')
+      const created = await store.appendSuggested(`整理报告：${payload.summary}`, 'curation_report')
+      if (created === undefined) {
+        sendJson(res, 409, { ok: false, error: '报告创建失败或同名报告已存在' })
+        return
+      }
+      const updated = await store.update(created.id, {
+        reportJson: JSON.stringify(payload),
+        origin: 'curation',
+        originDetail: '规则整理（待人类裁决）',
+        trace: [payload.summary, ...payload.risks].slice(0, 10),
+      })
+      const report = updated ?? created
+      events.publish({ type: 'memory:added', item: report })
+      appendAudit('memory.curation.run', { id: report.id, trigger: 'manual' })
+      sendJson(res, 200, { ok: true, report, payload })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/curation/decision`) {
+      if (!requireJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
+        return
+      }
+      const body = await readJsonBody(req)
+      const id = typeof body.id === 'string' ? body.id.trim() : ''
+      const decision = body.decision === 'approve' || body.decision === 'reject' ? body.decision : undefined
+      const reason = typeof body.reason === 'string' ? body.reason.trim() : ''
+      if (id === '' || decision === undefined) {
+        sendJson(res, 400, { ok: false, error: 'id and decision (approve|reject) are required' })
+        return
+      }
+      // 否决必须给出理由：强制思考，避免拍脑袋丢弃。
+      if (decision === 'reject' && [...reason].length < 10) {
+        sendJson(res, 400, { ok: false, error: '否决整理报告必须给出至少 10 个字的理由' })
+        return
+      }
+      const items = await store.list()
+      const report = items.find(item => item.id === id && item.type === 'curation_report')
+      if (report === undefined) {
+        sendJson(res, 404, { ok: false, error: 'curation report not found' })
+        return
+      }
+      const payload = parseCurationPayload(report.reportJson)
+      const updated = await store.update(id, {
+        status: decision === 'approve' ? 'approved' : 'rejected',
+        humanDecision: decision === 'approve' ? 'adopt' : 'discard',
+        trace: [
+          ...(report.trace ?? []),
+          `人类裁决：${decision === 'approve' ? '批准' : '否决'}${reason === '' ? '' : `；理由：${reason}`}`,
+        ].slice(-10),
+      })
+      if (updated !== undefined) events.publish({ type: 'memory:updated', item: updated })
+      let archived = 0
+      if (decision === 'approve' && payload !== undefined) {
+        for (const archiveId of archiveIdsOf(payload)) {
+          const archivedItem = await store.update(archiveId, { archived: true })
+          if (archivedItem !== undefined) {
+            archived += 1
+            events.publish({ type: 'memory:updated', item: archivedItem })
+          }
+        }
+      }
+      if (decision === 'reject') {
+        const negative = await store.appendSuggested(`[整理否决] ${reason}`, 'fact')
+        if (negative !== undefined) {
+          await store.update(negative.id, {
+            status: 'approved',
+            origin: 'curation',
+            originDetail: '整理否决理由（负样本）',
+          })
+        }
+      }
+      appendAudit('memory.curation.decision', { id, decision, reason, archived })
+      sendJson(res, 200, { ok: true, report: updated ?? report, archived })
       return
     }
 

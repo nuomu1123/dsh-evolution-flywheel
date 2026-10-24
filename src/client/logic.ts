@@ -4,7 +4,7 @@
  * 从 client/index.ts 抽出的原因：这些逻辑需要独立单测，不依赖 React 渲染。
  */
 
-export type FilterTab = 'all' | 'basic' | 'skill' | 'dma' | 'human' | 'debate' | 'audit' | 'model' | 'strategy'
+export type FilterTab = 'all' | 'basic' | 'skill' | 'dma' | 'human' | 'debate' | 'audit' | 'model' | 'strategy' | 'curation'
 
 export interface DebateRound {
   role: 'child' | 'mother'
@@ -14,7 +14,7 @@ export interface DebateRound {
 export interface MemoryItem {
   id: string
   content: string
-  type: 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight' | 'mental_model' | 'extraction_strategy'
+  type: 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight' | 'mental_model' | 'extraction_strategy' | 'curation_report'
   status:
     | 'suggested'
     | 'staged'
@@ -61,6 +61,8 @@ export interface MemoryItem {
   count?: number
   humanInterventions?: number
   verifiedAt?: string
+  reportJson?: string
+  archived?: boolean
 }
 
 export interface TimelineNode {
@@ -77,6 +79,7 @@ export function memoryTypeLabel(type: MemoryItem['type']): string {
   if (type === 'meta_insight') return '元认知洞察'
   if (type === 'mental_model') return '思维模型'
   if (type === 'extraction_strategy') return '提炼策略'
+  if (type === 'curation_report') return '整理报告'
   return type === 'fact' ? '事实' : '偏好'
 }
 
@@ -95,6 +98,7 @@ export function originLabel(origin?: string): string {
   if (origin === 'model-distill') return '模型提炼'
   if (origin === 'strategy-reflection') return '提炼反思'
   if (origin === 'strategy-merge') return '策略融合'
+  if (origin === 'curation') return '整理 Agent'
   if (origin === 'manual') return '手动记录'
   return '本地记忆'
 }
@@ -190,6 +194,7 @@ export function matchesFilter(item: MemoryItem, tab: FilterTab, keyword: string)
     || (tab === 'debate' && item.type === 'skill_error_fix' && hasDebateRecord(item))
     || (tab === 'model' && item.type === 'mental_model')
     || (tab === 'strategy' && item.type === 'extraction_strategy')
+    || (tab === 'curation' && item.type === 'curation_report')
     || tab === 'audit'
   if (!tabMatch) return false
   if (keyword === '') return true
@@ -213,6 +218,7 @@ export function matchesFilter(item: MemoryItem, tab: FilterTab, keyword: string)
     item.strategyStage ?? '',
     item.rule === true ? '跨域映射法则 融合法则' : '',
     (item.mergedFrom ?? []).join(' '),
+    item.reportJson ?? '',
     ...(item.trace ?? []),
     ...(item.sources ?? []),
   ].some(text => text.toLowerCase().includes(keyword))
@@ -248,6 +254,11 @@ export function auditItem(item: MemoryItem): AuditVerdict {
     return item.status === 'approved'
       ? { durability: 'long-term', necessity: 'needed', reason: '已裁决的提炼方法论，可跨任务复用' }
       : { durability: 'temporary', necessity: 'uncertain', reason: '提炼方法论候选，仅试用注入，待人类裁决' }
+  }
+  if (item.type === 'curation_report') {
+    return item.status === 'approved'
+      ? { durability: 'temporary', necessity: 'uncertain', reason: '已执行的人类裁决报告，可归档备查' }
+      : { durability: 'temporary', necessity: 'uncertain', reason: '整理报告待人类裁决，未执行归档' }
   }
   if (item.type === 'skill_error_fix') {
     if (item.status === 'human_intervention') {
@@ -293,7 +304,7 @@ export function auditSummary(items: readonly MemoryItem[]): AuditSummary {
 
 /** 各分区卡片数量，用于 Tab 徽标。 */
 export function tabCounts(items: readonly MemoryItem[]): Record<FilterTab, number> {
-  const counts: Record<FilterTab, number> = { all: 0, basic: 0, skill: 0, dma: 0, human: 0, debate: 0, audit: 0, model: 0, strategy: 0 }
+  const counts: Record<FilterTab, number> = { all: 0, basic: 0, skill: 0, dma: 0, human: 0, debate: 0, audit: 0, model: 0, strategy: 0, curation: 0 }
   for (const item of items) {
     for (const tab of Object.keys(counts) as FilterTab[]) {
       if (matchesFilter(item, tab, '')) counts[tab] += 1

@@ -17,7 +17,7 @@ const sanitize = (value: unknown, maxLength = 1000): string =>
 const sanitizeQuiet = (value: unknown, maxLength = 1000): string =>
   sanitizeText(value, maxLength, '记忆读取', false)
 
-export type MemoryType = 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight' | 'mental_model' | 'extraction_strategy'
+export type MemoryType = 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight' | 'mental_model' | 'extraction_strategy' | 'curation_report'
 export type MemoryStatus =
   | 'suggested'
   | 'staged'
@@ -91,6 +91,10 @@ export interface MemoryRecord {
   verifiedAt?: string
   /** 进入人类裁决的次数（显著性来源）。 */
   humanInterventions?: number
+  /** 已归档：保留在库里、可从界面检索，但不再进入系统提示。 */
+  archived?: boolean
+  /** 整理报告的结构化 JSON（仅 curation_report 使用）。 */
+  reportJson?: string
   /** 提炼策略：本次提炼使用的思维模型（例如“系统韧性”“反馈回路”）。 */
   thinkingModel?: string
   /** 提炼策略：为什么这样类比（跨域映射的推理依据）。 */
@@ -187,6 +191,7 @@ const MEMORY_TYPES: readonly MemoryType[] = [
   'meta_insight',
   'mental_model',
   'extraction_strategy',
+  'curation_report',
 ]
 const MEMORY_STATUSES: readonly MemoryStatus[] = [
   'suggested',
@@ -274,6 +279,8 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
     ...(typeof value.humanInterventions === 'number'
       ? { humanInterventions: Math.max(0, Math.trunc(value.humanInterventions)) }
       : {}),
+    ...(value.archived === true ? { archived: true } : {}),
+    ...(typeof value.reportJson === 'string' ? { reportJson: sanitizeQuiet(value.reportJson, 16000) } : {}),
     ...(typeof value.thinkingModel === 'string' ? { thinkingModel: sanitizeQuiet(value.thinkingModel, 120) } : {}),
     ...(typeof value.analogyReason === 'string' ? { analogyReason: sanitizeQuiet(value.analogyReason, 500) } : {}),
     ...(typeof value.effectiveFor === 'string' ? { effectiveFor: sanitizeQuiet(value.effectiveFor, 300) } : {}),
@@ -580,6 +587,8 @@ export class MemoryStore {
         ...(patch.humanInterventions !== undefined
           ? { humanInterventions: Math.max(0, Math.trunc(patch.humanInterventions)) }
           : {}),
+        ...(patch.archived !== undefined ? { archived: patch.archived } : {}),
+        ...(patch.reportJson !== undefined ? { reportJson: sanitize(patch.reportJson, 16000) } : {}),
       }
       const next = [...items]
       next[index] = updated

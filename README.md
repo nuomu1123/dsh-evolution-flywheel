@@ -2,7 +2,7 @@
 
 > 不是又一个记忆库，而是一个会怀疑自己、会跟自己对账、会在半夜查文献的元认知系统。
 
-**1.0.0 · MIT · 111 项测试 · 单包 DSH 插件 · 本地优先**
+**1.0.0 · MIT · 116 项测试 · 单包 DSH 插件 · 本地优先**
 
 ## 一个真实的故事
 
@@ -232,6 +232,14 @@ flowchart LR
 - **显著性**：人类干预次数与连续报错次数放大权重，≥0.8 时注入标「⚠️ 致命红线」；
 - **主动探针**：`memory_probe` 工具记录验证结果，写回 `verifiedAt` 与置信度；执行由 DSH 工具沙箱承担。
 
+### 整理 Agent（Curator）
+
+- 后台每 30 分钟检查一次，满足「新增 20 条或距上次 24h」阈值才生成报告；
+- 报告分四栏：保留 / 归档候选 / 高价值 / 重复组，并列出风险；
+- **只提议、不执行**：批准后才软归档（`archived=true`，仍可检索），物理删除永不自动发生；
+- 人类**否决必须给出至少 10 个字的理由**，理由会作为负样本写回记忆，供下轮整理引用；
+- 单飞 + 规则引擎，不依赖 LLM 也能出报告，不阻塞主会话。
+
 ---
 
 ## 状态机
@@ -354,6 +362,9 @@ POST /memory-explorer/api/resolution      # { id, resolution }
 POST /memory-explorer/api/human-decision  # { id, decision: 'adopt' | 'discard' }
 POST /memory-explorer/api/dma-run
 POST /memory-explorer/api/delete          # { id }
+POST /memory-explorer/api/curation/run    # 生成整理报告
+POST /memory-explorer/api/curation/decision # { id, decision, reason }
+GET  /memory-explorer/api/curation/latest # 最新整理报告
 ```
 
 ### 工具

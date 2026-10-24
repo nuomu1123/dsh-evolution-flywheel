@@ -263,6 +263,62 @@ test('HTTP API /reject 把策略置为 rejected 且保留记录', async () => {
   })
 })
 
+test('整理报告 API：生成、否决强制理由、批准后状态生效', async () => {
+  await withStore(async (store) => {
+    const events = new MemoryEventHub()
+
+    const runRes = createResponse()
+    await handleMemoryApi(postRequest('/memory-explorer/api/curation/run', {}), runRes, store, events)
+    assert.equal(runRes.status, 200)
+    const runBody = JSON.parse(runRes.body)
+    assert.equal(runBody.ok, true)
+    assert.equal(runBody.report.type, 'curation_report')
+    assert.ok(runBody.payload.total >= 4)
+    const reportId = runBody.report.id
+
+    const shortRes = createResponse()
+    await handleMemoryApi(
+      postRequest('/memory-explorer/api/curation/decision', { id: reportId, decision: 'reject', reason: '太短' }),
+      shortRes,
+      store,
+      events,
+    )
+    assert.equal(shortRes.status, 400)
+
+    const rejectRes = createResponse()
+    await handleMemoryApi(
+      postRequest('/memory-explorer/api/curation/decision', {
+        id: reportId,
+        decision: 'reject',
+        reason: '这份报告把仍有用的记忆误判为褪色，暂不采纳',
+      }),
+      rejectRes,
+      store,
+      events,
+    )
+    assert.equal(rejectRes.status, 200)
+    assert.equal(JSON.parse(rejectRes.body).report.status, 'rejected')
+    assert.ok((await store.list()).some(item =>
+      item.type === 'fact' && item.content.includes('[整理否决]')))
+
+    const extra = await store.appendSuggested('新增记忆改变报告摘要', 'fact')
+    assert.ok(extra)
+    const runRes2 = createResponse()
+    await handleMemoryApi(postRequest('/memory-explorer/api/curation/run', {}), runRes2, store, events)
+    assert.equal(runRes2.status, 200)
+    const reportId2 = JSON.parse(runRes2.body).report.id
+    const approveRes = createResponse()
+    await handleMemoryApi(
+      postRequest('/memory-explorer/api/curation/decision', { id: reportId2, decision: 'approve' }),
+      approveRes,
+      store,
+      events,
+    )
+    assert.equal(approveRes.status, 200)
+    assert.equal(JSON.parse(approveRes.body).report.status, 'approved')
+  })
+})
+
 test('HTTP API 支持 human-decision 采纳与丢弃', async () => {
   await withStore(async (store) => {
     const events = new MemoryEventHub()
