@@ -41,10 +41,62 @@ export interface CurationReportPayload {
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const REJECTED_ARCHIVE_AFTER_DAYS = 30
+const SIMILARITY_THRESHOLD = 0.72
+const SIMILARITY_SCAN_LIMIT = 200
 
 function excerpt(record: MemoryRecord): string {
   const text = record.errorSignature ?? record.content
   return text.replace(/\s+/gu, ' ').slice(0, 80)
+}
+
+function bigrams(text: string): Set<string> {
+  const normalized = text.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '')
+  const result = new Set<string>()
+  for (let index = 0; index < normalized.length - 1; index += 1) {
+    result.add(normalized.slice(index, index + 2))
+  }
+  return result
+}
+
+/** 字符 bigram Jaccard 相似度：只用于“提议合并”，不作自动合并依据。 */
+export function contentSimilarity(left: string, right: string): number {
+  const leftSet = bigrams(left)
+  const rightSet = bigrams(right)
+  if (leftSet.size === 0 || rightSet.size === 0) return 0
+  let intersection = 0
+  for (const token of leftSet) {
+    if (rightSet.has(token)) intersection += 1
+  }
+  return intersection / (leftSet.size + rightSet.size - intersection)
+}
+
+function similarGroups(active: readonly MemoryRecord[]): Array<{ ids: string[]; reason: string }> {
+  const groups: Array<{ ids: string[]; reason: string }> = []
+  const used = new Set<string>()
+  const candidates = active
+    .filter(item => item.status === 'approved' && item.content.trim() !== '')
+    .slice(0, SIMILARITY_SCAN_LIMIT)
+  for (let i = 0; i < candidates.length; i += 1) {
+    const left = candidates[i]
+    if (left === undefined || used.has(left.id)) continue
+    for (let j = i + 1; j < candidates.length; j += 1) {
+      const right = candidates[j]
+      if (right === undefined || used.has(right.id)) continue
+      if (left.type !== right.type) continue
+      if (left.content.trim() === right.content.trim()) continue
+      const score = contentSimilarity(left.content, right.content)
+      if (score < SIMILARITY_THRESHOLD) continue
+      used.add(left.id)
+      used.add(right.id)
+      groups.push({
+        ids: [left.id, right.id],
+        reason: `内容高度相似（${Math.round(score * 100)}%），需人工确认是否合并`,
+      })
+      break
+    }
+    if (groups.length >= 10) break
+  }
+  return groups
 }
 
 /** 纯规则生成报告；不调用 LLM，保证离线可用、零成本。 */
@@ -100,12 +152,13 @@ export function buildCurationReport(
     })
   }
 
-  const merge = [...duplicateGroups.entries()]
+  const exactMerge = [...duplicateGroups.entries()]
     .filter(([, ids]) => ids.length >= 2)
     .map(([content, ids]) => ({
       ids,
       reason: `内容完全重复：${content.slice(0, 60)}`,
     }))
+  const merge = [...exactMerge, ...similarGroups(active)]
 
   const undecided = active.filter(item =>
     item.status === 'suggested' || item.status === 'staged' || item.status === 'under_review').length

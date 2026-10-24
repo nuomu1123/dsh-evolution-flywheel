@@ -52,6 +52,18 @@ test('整理报告：高价值优先于归档，不重复分类', () => {
   assert.equal(report.archive.some(entry => entry.id === 'faded-hot'), false)
 })
 
+test('整理报告：相似但不完全相同的内容只作为合并候选', () => {
+  const items = [
+    item('sim1', { content: '修正路径后重试，并检查文件权限' }),
+    item('sim2', { content: '修正路径后重试，检查文件权限' }),
+  ]
+  const report = buildCurationReport(items, NOW, 'manual')
+  assert.ok(report.merge.some(entry => entry.ids.includes('sim1') && entry.ids.includes('sim2')))
+  assert.ok(report.merge.some(entry => entry.reason.includes('高度相似')))
+  // 只提议，不改动记忆本身
+  assert.equal(report.total, 2)
+})
+
 test('阈值触发：首次需 20 条，24 小时内不重复，新增 20 条才再跑', () => {
   const many = Array.from({ length: 20 }, (_, index) => item(`m${index}`))
   assert.equal(shouldRunCuration(many, undefined, NOW), true)

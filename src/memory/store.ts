@@ -5,7 +5,7 @@
  * 不接触 profile、node_modules 或其他插件的数据。
  */
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { clampMetaInsight, sanitizeText } from './sanitize.js'
@@ -128,6 +128,45 @@ export type SharedWorldEvent =
 export type SharedWorldListener = (event: SharedWorldEvent) => void
 
 const MAX_FILE_BYTES = 1024 * 1024
+const LOCK_STALE_MS = 30_000
+const LOCK_WAIT_MS = 3_000
+
+/**
+ * 跨进程写锁：用 `memories.jsonl.lock` 串行化“读 → 改 → 写”，
+ * 防止旧插件或第二个进程同时写同一文件时互相覆盖。
+ * 锁文件超过 30 秒视为进程崩溃后的残留，自动清理重试。
+ */
+async function withFileLock<T>(file: string, task: () => Promise<T>): Promise<T> {
+  const lockFile = `${file}.lock`
+  const started = Date.now()
+  for (;;) {
+    try {
+      const handle = await open(lockFile, 'wx')
+      try {
+        await handle.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }), 'utf8')
+        return await task()
+      } finally {
+        await handle.close().catch(() => {})
+        await rm(lockFile, { force: true }).catch(() => {})
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      try {
+        const info = await stat(lockFile)
+        if (Date.now() - info.mtimeMs > LOCK_STALE_MS) {
+          await rm(lockFile, { force: true }).catch(() => {})
+          continue
+        }
+      } catch {
+        continue
+      }
+      if (Date.now() - started > LOCK_WAIT_MS) {
+        throw new Error('memory store is locked by another process')
+      }
+      await new Promise(resolve => setTimeout(resolve, 40 + Math.random() * 60))
+    }
+  }
+}
 const MAX_CONTENT_CHARS = 2000
 const SKILL_DEBOUNCE_MS = 5 * 60 * 1000
 
@@ -360,7 +399,7 @@ export class MemoryStore {
   appendSuggested(content: string, type: MemoryType): Promise<MemoryRecord | undefined> {
     const text = sanitize(content, MAX_CONTENT_CHARS)
     if (text === '') return Promise.resolve(undefined)
-    return this.runExclusive(async () => {
+    return this.runExclusiveLocked(async () => {
       await this.ensureSeeded()
       const items = await this.readAll()
       if (items.some(item => item.content.trim() === text)) return undefined
@@ -382,7 +421,7 @@ export class MemoryStore {
   approve(id: string): Promise<MemoryRecord | undefined> {
     const key = id.trim()
     if (key === '') return Promise.resolve(undefined)
-    return this.runExclusive(async () => {
+    return this.runExclusiveLocked(async () => {
       await this.ensureSeeded()
       const items = await this.readAll()
       const index = items.findIndex(item => item.id === key)
@@ -419,7 +458,7 @@ export class MemoryStore {
     const context = sanitize(input.context, 500) || '未记录任务上下文'
     const resolution = input.resolution === undefined ? undefined : sanitize(input.resolution, 1000)
     if (fingerprint === '' || errorSignature === '') return Promise.resolve(undefined)
-    return this.runExclusive(async () => {
+    return this.runExclusiveLocked(async () => {
       await this.ensureSeeded()
       const items = await this.readAll()
       const index = items.findIndex(item => item.type === 'skill_error_fix' && item.fingerprint === fingerprint)
@@ -477,7 +516,7 @@ export class MemoryStore {
     const key = fingerprint.trim()
     const text = resolution.trim().slice(0, 1000)
     if (key === '' || text === '') return Promise.resolve(undefined)
-    return this.runExclusive(async () => {
+    return this.runExclusiveLocked(async () => {
       await this.ensureSeeded()
       const items = await this.readAll()
       const index = items.findIndex(item =>
@@ -501,7 +540,7 @@ export class MemoryStore {
     const key = id.trim()
     if (key === '') return Promise.resolve(undefined)
     const text = resolution.trim().slice(0, 1000)
-    return this.runExclusive(async () => {
+    return this.runExclusiveLocked(async () => {
       await this.ensureSeeded()
       const items = await this.readAll()
       const index = items.findIndex(item => item.id === key)
@@ -528,7 +567,7 @@ export class MemoryStore {
     if (patch.status !== undefined && !MEMORY_STATUSES.includes(patch.status)) {
       return Promise.reject(new Error(`invalid memory status: ${patch.status}`))
     }
-    return this.runExclusive(async () => {
+    return this.runExclusiveLocked(async () => {
       await this.ensureSeeded()
       const items = await this.readAll()
       const index = items.findIndex(item => item.id === key)
@@ -605,7 +644,7 @@ export class MemoryStore {
   touchStrategies(ids: readonly string[]): Promise<MemoryRecord[]> {
     const keys = [...new Set(ids.map(id => id.trim()).filter(id => id !== ''))]
     if (keys.length === 0) return Promise.resolve([])
-    return this.runExclusive(async () => {
+    return this.runExclusiveLocked(async () => {
       await this.ensureSeeded()
       const items = await this.readAll()
       const now = new Date().toISOString()
@@ -633,7 +672,7 @@ export class MemoryStore {
   touchRecalled(ids: readonly string[]): Promise<void> {
     const keys = [...new Set(ids.map(id => id.trim()).filter(id => id !== ''))]
     if (keys.length === 0) return Promise.resolve()
-    return this.runExclusive(async () => {
+    return this.runExclusiveLocked(async () => {
       await this.ensureSeeded()
       const items = await this.readAll()
       const now = new Date().toISOString()
@@ -690,7 +729,7 @@ export class MemoryStore {
       insight,
       ...(sources.length > 0 ? [`来源：${sources.join(' | ')}`] : []),
     ].join('\n')
-    return this.runExclusive(async () => {
+    return this.runExclusiveLocked(async () => {
       await this.ensureSeeded()
       const items = await this.readAll()
       if (items.some(item => item.type === 'meta_insight' && item.content === content)) return undefined
@@ -728,7 +767,7 @@ export class MemoryStore {
   delete(id: string): Promise<boolean> {
     const key = id.trim()
     if (key === '') return Promise.resolve(false)
-    return this.runExclusive(async () => {
+    return this.runExclusiveLocked(async () => {
       await this.ensureSeeded()
       const items = await this.readAll()
       const next = items.filter(item => item.id !== key)
@@ -743,6 +782,11 @@ export class MemoryStore {
     const next = this.queue.then(task, task)
     this.queue = next.then(() => undefined, () => undefined)
     return next
+  }
+
+  /** 写路径专用：在进程内串行之外，再加一层跨进程文件锁。 */
+  private runExclusiveLocked<T>(task: () => Promise<T>): Promise<T> {
+    return this.runExclusive(() => withFileLock(this.file, task))
   }
 
   private async ensureSeeded(): Promise<void> {

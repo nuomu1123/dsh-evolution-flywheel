@@ -205,6 +205,25 @@ test('HTTP API 支持 list、resolution、approve 与 delete', async () => {
   })
 })
 
+test('跨进程锁：两个 MemoryStore 实例并发写不丢数据', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-lock-'))
+  const storeA = new MemoryStore(dir)
+  const storeB = new MemoryStore(dir)
+  try {
+    await storeA.list()
+    await Promise.all([
+      storeA.appendSuggested('实例 A 的记忆', 'fact'),
+      storeB.appendSuggested('实例 B 的记忆', 'fact'),
+    ])
+    const items = await storeA.list()
+    assert.ok(items.some(item => item.content === '实例 A 的记忆'))
+    assert.ok(items.some(item => item.content === '实例 B 的记忆'))
+    assert.equal(items.filter(item => item.id.startsWith('seed-')).length, 4)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('共享世界模型：写入即广播，scope 默认 global', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-shared-world-'))
   const events = []
