@@ -20,7 +20,7 @@ import { summarizeUsage } from './usage.js'
 import type { SkillReviewEngine } from './state-machine.js'
 import { createStrategyHooks } from './strategy.js'
 import type { MemoryContextBase } from './context.js'
-import { archiveIdsOf, buildCurationReport, parseCurationPayload, summarizeCurationQuality } from './curator.js'
+import { archiveIdsOf, buildCurationReport, parseCurationPayload, summarizeCurationQuality, summarizeCurationWithLlm } from './curator.js'
 import type { MemoryStore } from './store.js'
 import { distillModel } from './model-distill.js'
 
@@ -224,6 +224,10 @@ export async function handleMemoryApi(
       }
       const items = await store.list()
       const payload = buildCurationReport(items, Date.now(), 'manual')
+      const llm = modelContext === undefined
+        ? undefined
+        : await summarizeCurationWithLlm(modelContext as MemoryContextBase, store, payload)
+      if (llm !== undefined) payload.llmSummary = llm.text
       const created = await store.appendSuggested(`整理报告：${payload.summary}`, 'curation_report')
       if (created === undefined) {
         sendJson(res, 409, { ok: false, error: '报告创建失败或同名报告已存在' })
@@ -231,9 +235,14 @@ export async function handleMemoryApi(
       }
       const updated = await store.update(created.id, {
         reportJson: JSON.stringify(payload),
+        ...(llm === undefined ? {} : { reviewTokens: llm.tokensUsed }),
         origin: 'curation',
         originDetail: '规则整理（待人类裁决）',
-        trace: [payload.summary, ...payload.risks].slice(0, 10),
+        trace: [
+          payload.summary,
+          ...(llm === undefined ? [] : ['AI 审查摘要已生成']),
+          ...payload.risks,
+        ].slice(0, 10),
       })
       const report = updated ?? created
       events.publish({ type: 'memory:added', item: report })

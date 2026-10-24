@@ -8,48 +8,16 @@
  * - 单飞 + 预算门，后台运行不阻塞主会话。
  */
 import { isFaded, memoryAgeDays, memoryFreshness, memorySalience } from './decay.js'
+import { readBudget } from './budget.js'
+import { complete } from './review-driver.js'
 import type { MemoryContextBase } from './context.js'
 import type { MemoryEventHub } from './events.js'
 import type { MemoryRecord, MemoryStore } from './store.js'
 
-export type CurationTrigger = 'threshold' | 'manual' | 'scheduled'
+import type { CurationItem, CurationQuality, CurationReportPayload, CurationTrigger } from './curation-shared.js'
 
-export interface CurationItem {
-  id: string
-  content: string
-  reason: string
-}
-
-export interface CurationQuality {
-  approved: number
-  rejected: number
-  pending: number
-  total: number
-  /** 已裁决报告的采纳率 0-1；无裁决时为 0。 */
-  approvalRate: number
-  /** 最近几条否决理由，供下轮整理引用。 */
-  rejectionReasons: string[]
-}
-
-export interface CurationReportPayload {
-  trigger: CurationTrigger
-  generatedAt: string
-  total: number
-  keep: CurationItem[]
-  archive: CurationItem[]
-  highValue: CurationItem[]
-  merge: Array<{ ids: string[]; reason: string }>
-  risks: string[]
-  stats: {
-    fresh: number
-    faded: number
-    duplicates: number
-    highSalience: number
-    undecided: number
-  }
-  quality?: CurationQuality
-  summary: string
-}
+export type { CurationItem, CurationQuality, CurationReportPayload, CurationTrigger } from './curation-shared.js'
+export { parseCurationPayload } from './curation-shared.js'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const REJECTED_ARCHIVE_AFTER_DAYS = 30
@@ -243,17 +211,48 @@ export function archiveIdsOf(payload: CurationReportPayload): string[] {
   return [...new Set(payload.archive.map(item => item.id))]
 }
 
-/** 解析报告 JSON；损坏时返回 undefined。 */
-export function parseCurationPayload(text: string | undefined): CurationReportPayload | undefined {
-  if (text === undefined || text.trim() === '') return undefined
+/**
+ * 可选的 LLM 审查摘要：只基于规则报告作判断，不编造记忆。
+ * 预算耗尽、无 LLM 或失败时返回 undefined，调用方回退规则摘要。
+ */
+export async function summarizeCurationWithLlm(
+  ctx: MemoryContextBase,
+  store: MemoryStore,
+  payload: CurationReportPayload,
+  maxTokens = 400,
+): Promise<{ text: string; tokensUsed: number } | undefined> {
   try {
-    const value: unknown = JSON.parse(text)
-    if (typeof value !== 'object' || value === null) return undefined
-    return value as CurationReportPayload
-  } catch {
+    const budget = await readBudget(store)
+    if (budget.exceeded) return undefined
+    const lines = [
+      `总数 ${payload.total}；保留 ${payload.keep.length}；归档候选 ${payload.archive.length}；高价值 ${payload.highValue.length}；重复组 ${payload.merge.length}；待裁决 ${payload.stats.undecided}。`,
+      payload.archive.length === 0 ? '' : `归档候选：${payload.archive.slice(0, 5).map(item => item.content).join('；')}`,
+      payload.highValue.length === 0 ? '' : `高价值：${payload.highValue.slice(0, 5).map(item => item.content).join('；')}`,
+      payload.risks.length === 0 ? '' : `风险：${payload.risks.join('；')}`,
+    ].filter(line => line !== '')
+    const completion = await complete(
+      ctx,
+      '你是记忆整理器的审查者。只根据给定报告作判断，不编造新记忆；输出中文，120-200 字。',
+      [
+        '请审查这份记忆整理报告，给出：',
+        '1. 最值得保留的 1-2 条及理由；',
+        '2. 最该归档的 1-2 条及风险；',
+        '3. 人类裁决时最该检查什么。',
+        '',
+        ...lines,
+      ].join('\n'),
+      maxTokens,
+    )
+    const text = completion.text.trim()
+    if (text === '') return undefined
+    return { text: text.slice(0, 800), tokensUsed: completion.tokensUsed }
+  } catch (error) {
+    console.error('[dsh-evolution-flywheel] curation LLM summary failed:', error)
     return undefined
   }
 }
+
+
 
 /**
  * 后台整理调度：每 30 分钟检查一次，满足阈值才生成报告。
@@ -277,13 +276,22 @@ export function registerCurationSchedule(
       if (!shouldRunCuration(items, Number.isFinite(parsed) ? parsed : undefined)) return
       running = true
       const payload = buildCurationReport(items, Date.now(), 'threshold')
+      const llm = typeof ctx.get === 'function' && ctx.get('llm') !== undefined
+        ? await summarizeCurationWithLlm(ctx, store, payload)
+        : undefined
+      if (llm !== undefined) payload.llmSummary = llm.text
       const created = await store.appendSuggested(`整理报告：${payload.summary}`, 'curation_report')
       if (created === undefined) return
       const updated = await store.update(created.id, {
         reportJson: JSON.stringify(payload),
+        ...(llm === undefined ? {} : { reviewTokens: llm.tokensUsed }),
         origin: 'curation',
         originDetail: '后台自动整理（待人类裁决）',
-        trace: [payload.summary, ...payload.risks].slice(0, 10),
+        trace: [
+          payload.summary,
+          ...(llm === undefined ? [] : ['AI 审查摘要已生成']),
+          ...payload.risks,
+        ].slice(0, 10),
       })
       events.publish({ type: 'memory:added', item: updated ?? created })
     } catch (error) {

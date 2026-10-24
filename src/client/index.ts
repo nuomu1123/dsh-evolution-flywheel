@@ -31,7 +31,7 @@ import {
   type MemoryItem,
 } from './logic.js'
 import { memorySalience, perceptionLabel } from '../memory/decay.js'
-import { parseCurationPayload } from '../memory/curator.js'
+import { parseCurationPayload } from '../memory/curation-shared.js'
 
 declare const require: (id: string) => any
 
@@ -2129,6 +2129,7 @@ function MemoryExplorerPage() {
                   payload.quality === undefined
                     ? ''
                     : `历史采纳率：${Math.round(payload.quality.approvalRate * 100)}%（批准 ${payload.quality.approved} / 否决 ${payload.quality.rejected}）`,
+                  payload.llmSummary === undefined ? '' : `【AI 摘要】${payload.llmSummary}`,
                   payload.summary,
                   section('归档候选', payload.archive.map(entry => `- ${entry.content}（${entry.reason}）`)),
                   section('高价值', payload.highValue.map(entry => `- ${entry.content}（${entry.reason}）`)),

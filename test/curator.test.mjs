@@ -3,8 +3,12 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
-import { buildCurationReport, parseCurationPayload, shouldRunCuration, summarizeCurationQuality } from '../lib/memory/curator.js'
+import { buildCurationReport, parseCurationPayload, shouldRunCuration, summarizeCurationQuality, summarizeCurationWithLlm } from '../lib/memory/curator.js'
+import { MemoryStore } from '../lib/memory/store.js'
 
 const NOW = Date.parse('2026-10-24T12:00:00Z')
 const DAY = 24 * 60 * 60 * 1000
@@ -96,4 +100,28 @@ test('报告 JSON 解析：损坏时安全返回 undefined', () => {
   assert.ok(parseCurationPayload(JSON.stringify(report)))
   assert.equal(parseCurationPayload('{坏 JSON'), undefined)
   assert.equal(parseCurationPayload(''), undefined)
+})
+
+test('LLM 摘要：有模型时返回建议，无模型时回退 undefined', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-curator-llm-'))
+  const store = new MemoryStore(dir)
+  try {
+    const llm = {
+      listProviders: () => [{ id: 'mock' }],
+      listModels: async () => [{ id: 'mock-model' }],
+      async *stream() {
+        yield { type: 'text-delta', text: '建议保留高价值记忆，归档褪色项，裁决时先看否决理由。' }
+        yield { type: 'finish' }
+      },
+    }
+    const ctx = { get: name => name === 'llm' ? llm : undefined }
+    const payload = buildCurationReport([item('x')], Date.now(), 'manual')
+    const result = await summarizeCurationWithLlm(ctx, store, payload)
+    assert.ok(result)
+    assert.match(result.text, /保留/)
+    assert.ok(result.tokensUsed >= 0)
+    assert.equal(await summarizeCurationWithLlm({ get: () => undefined }, store, payload), undefined)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
