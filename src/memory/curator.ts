@@ -11,7 +11,6 @@ import { isFaded, memoryAgeDays, memoryFreshness, memorySalience } from './decay
 import { readBudget } from './budget.js'
 import { complete } from './review-driver.js'
 import type { MemoryContextBase } from './context.js'
-import type { MemoryEventHub } from './events.js'
 import type { MemoryRecord, MemoryStore } from './store.js'
 
 import type { CurationItem, CurationQuality, CurationReportPayload, CurationTrigger } from './curation-shared.js'
@@ -249,62 +248,5 @@ export async function summarizeCurationWithLlm(
   } catch (error) {
     console.error('[dsh-evolution-flywheel] curation LLM summary failed:', error)
     return undefined
-  }
-}
-
-
-
-/**
- * 后台整理调度：每 30 分钟检查一次，满足阈值才生成报告。
- * 只生成待裁决报告，不自动归档；单飞保护，失败只写日志。
- */
-export function registerCurationSchedule(
-  ctx: MemoryContextBase,
-  store: MemoryStore,
-  events: MemoryEventHub,
-  intervalMs = 30 * 60_000,
-): void {
-  let running = false
-  const tick = async (): Promise<void> => {
-    if (running) return
-    try {
-      const items = await store.list()
-      const last = items
-        .filter(item => item.type === 'curation_report')
-        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
-      const parsed = last === undefined ? Number.NaN : Date.parse(last.createdAt)
-      if (!shouldRunCuration(items, Number.isFinite(parsed) ? parsed : undefined)) return
-      running = true
-      const payload = buildCurationReport(items, Date.now(), 'threshold')
-      const llm = typeof ctx.get === 'function' && ctx.get('llm') !== undefined
-        ? await summarizeCurationWithLlm(ctx, store, payload)
-        : undefined
-      if (llm !== undefined) payload.llmSummary = llm.text
-      const created = await store.appendSuggested(`整理报告：${payload.summary}`, 'curation_report')
-      if (created === undefined) return
-      const updated = await store.update(created.id, {
-        reportJson: JSON.stringify(payload),
-        ...(llm === undefined ? {} : { reviewTokens: llm.tokensUsed }),
-        origin: 'curation',
-        originDetail: '后台自动整理（待人类裁决）',
-        trace: [
-          payload.summary,
-          ...(llm === undefined ? [] : ['AI 审查摘要已生成']),
-          ...payload.risks,
-        ].slice(0, 10),
-      })
-      events.publish({ type: 'memory:added', item: updated ?? created })
-    } catch (error) {
-      console.error('[dsh-evolution-flywheel] curation schedule failed:', error)
-    } finally {
-      running = false
-    }
-  }
-  const timer = setInterval(() => { void tick() }, intervalMs)
-  if (typeof timer.unref === 'function') timer.unref()
-  try {
-    ctx.effect(() => () => clearInterval(timer))
-  } catch {
-    clearInterval(timer)
   }
 }

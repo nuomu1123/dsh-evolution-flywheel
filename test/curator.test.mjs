@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { buildCurationReport, parseCurationPayload, shouldRunCuration, summarizeCurationQuality, summarizeCurationWithLlm } from '../lib/memory/curator.js'
+import { runCurationCluster } from '../lib/memory/curation-cluster.js'
 import { MemoryStore } from '../lib/memory/store.js'
 
 const NOW = Date.parse('2026-10-24T12:00:00Z')
@@ -124,4 +125,19 @@ test('LLM 摘要：有模型时返回建议，无模型时回退 undefined', asy
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('整理集群：三角色执行并给出红队复核意见', async () => {
+  const items = [
+    item('old', {
+      createdAt: new Date(NOW - 60 * DAY).toISOString(),
+      humanInterventions: 1,
+    }),
+  ]
+  const payload = await runCurationCluster(items, NOW, 'manual')
+  assert.equal(payload.roles?.length, 3)
+  assert.deepEqual(payload.roles?.map(role => role.name), ['classifier', 'red-team', 'reporter'])
+  assert.ok(payload.roles?.every(role => typeof role.elapsedMs === 'number'))
+  assert.ok(payload.risks.some(risk => risk.includes('红队')))
+  assert.ok(payload.archive.some(entry => entry.id === 'old'))
 })

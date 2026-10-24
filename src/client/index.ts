@@ -2130,6 +2130,9 @@ function MemoryExplorerPage() {
                     ? ''
                     : `历史采纳率：${Math.round(payload.quality.approvalRate * 100)}%（批准 ${payload.quality.approved} / 否决 ${payload.quality.rejected}）`,
                   payload.llmSummary === undefined ? '' : `【AI 摘要】${payload.llmSummary}`,
+                  payload.roles === undefined
+                    ? ''
+                    : `【角色】${payload.roles.map(role => `${role.name}（${role.elapsedMs}ms）：${role.summary}`).join(' | ')}`,
                   payload.summary,
                   section('归档候选', payload.archive.map(entry => `- ${entry.content}（${entry.reason}）`)),
                   section('高价值', payload.highValue.map(entry => `- ${entry.content}（${entry.reason}）`)),

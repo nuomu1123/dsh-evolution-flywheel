@@ -24,6 +24,13 @@ export interface CurationQuality {
   rejectionReasons: string[]
 }
 
+/** 集群里每个角色的执行痕迹。 */
+export interface CurationRoleTrace {
+  name: string
+  summary: string
+  elapsedMs: number
+}
+
 export interface CurationReportPayload {
   trigger: CurationTrigger
   generatedAt: string
@@ -43,6 +50,8 @@ export interface CurationReportPayload {
   quality?: CurationQuality
   /** 可选的 LLM 审查摘要；预算不足或失败时回退规则摘要。 */
   llmSummary?: string
+  /** 多角色集群的执行痕迹：classifier / red-team / reporter。 */
+  roles?: CurationRoleTrace[]
   summary: string
 }
 
