@@ -315,7 +315,6 @@ const memoryStyles = {
     gap: '12px',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    resize: 'both',
     overflow: 'auto',
     minWidth: '240px',
     minHeight: '96px',
@@ -1131,6 +1130,12 @@ const MEMORY_PULSE_CSS = `
 }
 `
 
+const CARD_DENSITY = {
+  compact: { padding: '8px 10px', gap: '8px', fontSize: '12px' },
+  standard: { padding: '12px 14px', gap: '12px', fontSize: '13px' },
+  large: { padding: '18px 20px', gap: '16px', fontSize: '14px' },
+} as const
+
 const WhaleMascot = React.memo(function WhaleMascot(props: { busy: boolean; error: boolean }) {
   const [tip, setTip] = React.useState('正在深度思考…')
   React.useEffect(() => {
@@ -1207,6 +1212,7 @@ function MemoryExplorerPage() {
   const [auditEntries, setAuditEntries] = React.useState(null as AuditEntry[] | null)
   const [auditLoading, setAuditLoading] = React.useState(false)
   const [distilling, setDistilling] = React.useState(false)
+  const [density, setDensity] = React.useState('standard')
   const pageRef = React.useRef(null)
   const [pageVisible, setPageVisible] = React.useState(false)
   React.useEffect(() => {
@@ -1785,6 +1791,12 @@ function MemoryExplorerPage() {
         disabled: distilling,
         onClick: () => { void distill() },
       }, distilling ? '提炼中…' : '提炼模型'),
+      ...(['compact', 'standard', 'large'] as const).map(level => h('button', {
+        key: `density-${level}`,
+        type: 'button',
+        style: density === level ? { ...memoryStyles.button, ...memoryStyles.tabActive } : memoryStyles.button,
+        onClick: () => setDensity(level),
+      }, level === 'compact' ? '紧凑' : level === 'standard' ? '标准' : '大')),
     ]),
     error !== ''
       ? h('div', { key: 'error', style: memoryStyles.errorBox }, [
@@ -1885,15 +1897,15 @@ function MemoryExplorerPage() {
                   ? memoryStyles.statusApproved
                   : memoryStyles.statusSuggested
 
-        return h('div', { key: item.id, style: cardStyle }, [
+        return h('div', { key: item.id, style: { ...cardStyle, ...CARD_DENSITY[density as keyof typeof CARD_DENSITY] } }, [
           h('div', { key: 'main', style: memoryStyles.itemMain }, [
             h('div', { key: 'provenance', style: memoryStyles.provenance },
               `创建 ${formatMemoryTime(item.createdAt)} · 来源 ${originLabel(item.origin)}${item.discipline === undefined ? '' : ` · ${item.discipline}`}`),
             h('div', {
               key: 'content',
               style: isExpanded
-                ? memoryStyles.content
-                : { ...memoryStyles.content, ...memoryStyles.contentClamp },
+                ? { ...memoryStyles.content, fontSize: CARD_DENSITY[density as keyof typeof CARD_DENSITY].fontSize }
+                : { ...memoryStyles.content, ...memoryStyles.contentClamp, fontSize: CARD_DENSITY[density as keyof typeof CARD_DENSITY].fontSize },
             }, item.content),
             activeTab === 'audit'
               ? (() => {

@@ -205,7 +205,9 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
     ...(Array.isArray(value.debateRounds) ? { debateRounds: normalizeDebateRounds(value.debateRounds) } : {}),
     ...(typeof value.metaInsight === 'string' ? { metaInsight: sanitizeQuiet(value.metaInsight, 100) } : {}),
     ...(typeof value.counterexample === 'string' ? { counterexample: sanitizeQuiet(value.counterexample, 500) } : {}),
-    ...(typeof value.origin === 'string' ? { origin: sanitizeQuiet(value.origin, 60) } : {}),
+    ...(typeof value.origin === 'string'
+      ? { origin: sanitizeQuiet(value.origin, 60) }
+      : { origin: value.type === 'mental_model' ? 'model-distill' : value.type === 'meta_insight' ? 'dma' : value.type === 'skill_error_fix' ? 'error-capture' : 'manual' }),
     ...(typeof value.originDetail === 'string' ? { originDetail: sanitizeQuiet(value.originDetail, 300) } : {}),
     ...(Array.isArray(value.trace)
       ? { trace: value.trace.filter((step): step is string => typeof step === 'string').slice(0, 10) }
