@@ -265,3 +265,53 @@ test('tab 徽标随关键词变化（不再「114 条里搜到 0 条但徽标仍
   assert.equal(tabCounts(items).all, 2)
   assert.equal(tabCounts(items, 'alpha').all, 1, '带关键词时徽标应只统计命中数')
 })
+
+test('重复 id：读入只保留第一条，其余进 .corrupt', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-dup-'))
+  try {
+    const file = join(dir, 'memories.jsonl')
+    const row = content => JSON.stringify({ id: 'mem-dup', content, type: 'fact', status: 'approved', createdAt: iso() })
+    await writeFile(file, `${[row('第一份'), row('第二份')].join('\n')}\n`, 'utf8')
+    const store = new MemoryStore(dir)
+    const items = await store.list()
+    assert.equal(items.length, 1)
+    assert.equal(items[0].content, '第一份')
+    const corrupt = await readFile(`${file}.corrupt`, 'utf8')
+    assert.match(corrupt, /第二份/u, '被丢弃的重复行必须留档')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('读时截断：trace 不再被砍到 10 条（否则读一次写回就永久变短）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-trace-'))
+  try {
+    const file = join(dir, 'memories.jsonl')
+    const trace = Array.from({ length: 20 }, (_, index) => `步骤 ${index}`)
+    await writeFile(
+      file,
+      `${JSON.stringify({ id: 'mem-t', content: 'x', type: 'fact', status: 'approved', createdAt: iso(), trace })}\n`,
+      'utf8',
+    )
+    const store = new MemoryStore(dir)
+    const items = await store.list()
+    assert.equal(items[0].trace.length, 20)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('.corrupt 保留完整坏行（不再只存前 500 字）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-corrupt-'))
+  try {
+    const file = join(dir, 'memories.jsonl')
+    const broken = 'x'.repeat(900)
+    await writeFile(file, `${broken}\n`, 'utf8')
+    const store = new MemoryStore(dir)
+    await store.list()
+    const corrupt = await readFile(`${file}.corrupt`, 'utf8')
+    assert.ok(corrupt.includes(broken), `备份应包含完整 900 字坏行，实际长度 ${corrupt.length}`)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

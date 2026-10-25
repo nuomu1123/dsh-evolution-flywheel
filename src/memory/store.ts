@@ -5,6 +5,7 @@
  * 不接触 profile、node_modules 或其他插件的数据。
  */
 import { randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { appendFile, link, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -216,6 +217,12 @@ async function withFileLock<T>(file: string, task: () => Promise<T>): Promise<T>
           continue
         }
       } catch {
+        // stat/rm 失败（例如锁路径被建成目录）也必须计入超时：
+        // 旧写法直接 `continue` 会绕过下面的超时判断，变成 100% CPU 的忙等。
+        if (Date.now() - started > LOCK_WAIT_MS) {
+          throw new Error('memory store is locked by another process（锁文件无法清理）')
+        }
+        await new Promise(resolve => setTimeout(resolve, 80 + Math.random() * 40))
         continue
       }
       if (Date.now() - started > LOCK_WAIT_MS) {
@@ -318,7 +325,7 @@ function isRecord(value: unknown): value is MemoryRecord {
 function normalizeDebateRounds(value: unknown): DebateRound[] {
   if (!Array.isArray(value)) return []
   const rounds: DebateRound[] = []
-  for (const entry of value.slice(0, 6)) {
+  for (const entry of value.slice(0, 24)) {
     if (typeof entry !== 'object' || entry === null) continue
     const record = entry as { role?: unknown; content?: unknown }
     if (record.role !== 'child' && record.role !== 'mother') continue
@@ -357,8 +364,9 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
       ? { origin: sanitizeQuiet(value.origin, 60) }
       : { origin: value.type === 'mental_model' ? 'model-distill' : value.type === 'meta_insight' ? 'dma' : value.type === 'skill_error_fix' ? 'error-capture' : 'manual' }),
     ...(typeof value.originDetail === 'string' ? { originDetail: sanitizeQuiet(value.originDetail, 300) } : {}),
+    // 读时截断过狠会导致「读一次写回就永久变短」：这些字段本来就小，放宽到 50/30。
     ...(Array.isArray(value.trace)
-      ? { trace: value.trace.filter((step): step is string => typeof step === 'string').slice(0, 10) }
+      ? { trace: value.trace.filter((step): step is string => typeof step === 'string').slice(0, 50) }
       : {}),
     ...(typeof value.reviewRound === 'number' ? { reviewRound: value.reviewRound } : {}),
     ...(value.humanDecision === 'adopt' || value.humanDecision === 'discard'
@@ -367,7 +375,7 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
     ...(typeof value.topic === 'string' ? { topic: sanitizeQuiet(value.topic, 300) } : {}),
     ...(typeof value.discipline === 'string' ? { discipline: sanitizeQuiet(value.discipline, 120) } : {}),
     ...(Array.isArray(value.sources)
-      ? { sources: value.sources.filter((source): source is string => typeof source === 'string').slice(0, 10) }
+      ? { sources: value.sources.filter((source): source is string => typeof source === 'string').slice(0, 30) }
       : {}),
     ...(typeof value.runId === 'string' && value.runId.trim() !== ''
       ? { runId: value.runId.trim().slice(0, 100) }
@@ -1022,13 +1030,22 @@ export class MemoryStore {
       )
     }
     const items: MemoryRecord[] = []
+    // 重复 id 会让 approve 只改第一条、delete 删全部（语义不一致）：读入时保留第一条，
+    // 其余隔离到 .corrupt，并让后续写回自然收敛。
+    const seenIds = new Set<string>()
     for (const line of text.split('\n')) {
       const trimmed = line.trim()
       if (trimmed === '') continue
       try {
         const value: unknown = JSON.parse(trimmed)
         if (isRecord(value)) {
-          items.push(normalizeRecord(value))
+          const record = normalizeRecord(value)
+          if (seenIds.has(record.id)) {
+            await this.quarantine(trimmed, new Error(`重复 id：${record.id}`))
+            continue
+          }
+          seenIds.add(record.id)
+          items.push(record)
         } else {
           // 合法 JSON 但不是记忆对象（如 `{}`、数组、别家文件混入）同样不能静默丢。
           await this.quarantine(trimmed, new Error('不是合法的记忆对象'))
@@ -1050,14 +1067,17 @@ export class MemoryStore {
    * 同一进程内按原文去重，避免高频读路径反复追加同一行。
    */
   private async quarantine(line: string, error: unknown): Promise<void> {
-    const snippet = line.length > 500 ? `${line.slice(0, 500)}…` : line
-    if (this.quarantined.has(snippet)) return
-    this.quarantined.add(snippet)
+    // 去重键用完整行的哈希：只用前 500 字做键会把「前缀相同、尾部不同」的两条坏行误合并成一条。
+    const key = createHash('sha256').update(line).digest('hex')
+    if (this.quarantined.has(key)) return
+    this.quarantined.add(key)
     // 上限 500 条，防止一个被反复读的坏文件把内存吃光。
     if (this.quarantined.size > 500) {
       const oldest = this.quarantined.values().next().value
       if (oldest !== undefined) this.quarantined.delete(oldest)
     }
+    // 备份保留完整行（上限 4000 字，避免单行撑爆备份文件）。
+    const snippet = line.length > 4000 ? `${line.slice(0, 4000)}…` : line
     const reason = error instanceof Error ? error.message : String(error)
     try {
       await mkdir(dirname(this.file), { recursive: true })
