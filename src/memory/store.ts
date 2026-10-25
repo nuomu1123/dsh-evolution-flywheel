@@ -443,22 +443,42 @@ export interface MemorySearchOptions {
   includeArchived?: boolean
 }
 
+/** 全半角归一 + 小写：`ｐｌｕｇｉｎ` 与 `plugin` 视为同一 token（P1-7）。 */
+function normalizeForSearch(text: string): string {
+  return text.normalize('NFKC').toLowerCase()
+}
+
+/** 纯英文/数字 token 才要求词边界；中文与短语继续用子串。 */
+const SEARCH_TOKEN = /^[a-z0-9_.+-]+$/u
+
+/**
+ * 单个词是否命中。
+ * 中文用子串匹配；英文/数字 token 要求词边界，避免 `SSE` 命中 `AssertionError` 这类误报。
+ */
+function termMatches(haystack: string, term: string): boolean {
+  if (!haystack.includes(term)) return false
+  if (!SEARCH_TOKEN.test(term)) return true
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+  return new RegExp(`(?:^|[^a-z0-9_])${escaped}(?:$|[^a-z0-9_])`, 'u').test(haystack)
+}
+
 /**
  * 命中质量打分：正文命中 > 错误签名 > 上下文 > 解法；全等/前缀额外加权。
  * 返回 0 表示未命中。新记录有极小加成（最多 +3），避免旧噪声压过当前上下文。
  */
 function searchScore(item: MemoryRecord, text: string): number {
-  const content = item.content.toLowerCase()
-  const signature = (item.errorSignature ?? '').toLowerCase()
-  const context = (item.context ?? '').toLowerCase()
-  const resolution = (item.resolution ?? '').toLowerCase()
+  const term = normalizeForSearch(text)
+  const content = normalizeForSearch(item.content)
+  const signature = normalizeForSearch(item.errorSignature ?? '')
+  const context = normalizeForSearch(item.context ?? '')
+  const resolution = normalizeForSearch(item.resolution ?? '')
   let score = 0
-  if (content === text) score += 100
-  else if (content.startsWith(text)) score += 50
-  else if (content.includes(text)) score += 20
-  if (signature.includes(text)) score += 15
-  if (context.includes(text)) score += 8
-  if (resolution.includes(text)) score += 5
+  if (content === term) score += 100
+  else if (content.startsWith(term)) score += 50
+  else if (termMatches(content, term)) score += 20
+  if (termMatches(signature, term)) score += 15
+  if (termMatches(context, term)) score += 8
+  if (termMatches(resolution, term)) score += 5
   // 漫游猜想（speculative）常含大量技术词，但未经验证：默认降权，仍可检索到但排在后面。
   // 降权只影响排序，不能把「只命中签名」的记录抹成未命中（score 15 - 15 = 0）；
   // 原始 score 为 0（完全没命中）时仍保持未命中。
@@ -824,9 +844,13 @@ export class MemoryStore {
    * 与 search 相同，但附带**命中总数**，让调用方知道「只返回了前 N 条」。
    * 2026-10-25 子 Agent 反馈：搜「EIO」有 15 条命中却只回 3 条，没有任何提示。
    */
-  searchWithTotal(query: string, limit = 10, options: MemorySearchOptions = {}): Promise<{ items: MemoryRecord[]; total: number }> {
-    const text = query.trim().toLowerCase()
-    if (text === '') return Promise.resolve({ items: [], total: 0 })
+  searchWithTotal(
+    query: string,
+    limit = 10,
+    options: MemorySearchOptions = {},
+  ): Promise<{ items: MemoryRecord[]; total: number; relaxed: boolean }> {
+    const text = normalizeForSearch(query.trim())
+    if (text === '') return Promise.resolve({ items: [], total: 0, relaxed: false })
     const types = options.type === undefined
       ? undefined
       : new Set<MemoryType>(Array.isArray(options.type) ? options.type : [options.type])
@@ -834,7 +858,7 @@ export class MemoryStore {
     return this.runExclusive(async () => {
       await this.ensureSeeded()
       const items = await this.readAll()
-      // 多词查询按 AND 语义：每个词都必须命中（2026-10-25 子 Agent 实测：
+      // 多词查询默认 AND：每个词都必须命中（2026-10-25 子 Agent 实测：
       // 整串子串匹配让「插件 启动」这类查询 4 次全部返回 0 条）。
       const terms = text.split(/\s+/u).filter(term => term !== '')
       const scored: Array<{ item: MemoryRecord; score: number }> = []
@@ -853,10 +877,30 @@ export class MemoryStore {
         }
         if (allMatched) scored.push({ item, score })
       }
+      // AND 全空时放宽为 OR：用户输入多个词（如「Node EIO」「Windows 路径」）却被判 0 条，
+      // 是体检里最劝退的问题之一。放宽后按「命中词数」加权，命中越多越靠前。
+      let relaxed = false
+      if (scored.length === 0 && terms.length > 1) {
+        relaxed = true
+        for (const item of items) {
+          if (!includeArchived && item.archived === true) continue
+          if (types !== undefined && !types.has(item.type)) continue
+          let score = 0
+          let matched = 0
+          for (const term of terms) {
+            const termScore = searchScore(item, term)
+            if (termScore > 0) {
+              matched += 1
+              score += termScore
+            }
+          }
+          if (matched > 0) scored.push({ item, score: score + matched * 50 })
+        }
+      }
       scored.sort((left, right) =>
         right.score - left.score || right.item.createdAt.localeCompare(left.item.createdAt))
       const capped = scored.slice(0, Math.max(1, Math.min(50, limit))).map(entry => entry.item)
-      return { items: capped, total: scored.length }
+      return { items: capped, total: scored.length, relaxed }
     })
   }
 

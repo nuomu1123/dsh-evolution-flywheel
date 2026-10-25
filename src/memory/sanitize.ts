@@ -13,8 +13,13 @@ const INJECTION_PATTERNS: readonly RegExp[] = [
   /系统提示词?/gu,
   /you\s+are\s+now|你现在是|从现在开始你/giu,
   /(?:执行|运行|run)\s*(?:以下|下列|the\s+following)/giu,
-  /(?:curl|wget|powershell|cmd\.exe|bash)\s+[^\n]{0,200}/giu,
-  /(?:rm\s+-rf|del\s+\/f|format\s+[a-z]:)/giu,
+  // 只拦「下载即执行 / 编码执行 / 动态执行 / 破坏性删除」这类高危组合。
+  // 普通技术文本里的 "PowerShell 7 的语法…"、"bash 脚本用 set -euo pipefail" 必须放行（P1-13：
+  // 旧规则把「powershell|bash」后跟任意 200 字整段替换成占位符，实测吞掉记忆正文 106 字）。
+  /(?:curl|wget)\b[^\n]{0,200}\|\s*(?:sudo\s+)?(?:ba|z)?sh\b/giu,
+  /(?:powershell|pwsh)(?:\.exe)?\s+(?:-\w+\s+)*-e(?:nc|ncodedcommand)?\s+[A-Za-z0-9+/=]{16,}/giu,
+  /(?:invoke-expression|iex)\s*[\(\s]/giu,
+  /(?:rm\s+-rf\s+[\/~]|del\s+\/[sfq]|format\s+[a-z]:)/giu,
 ]
 
 const INJECTION_LABELS: readonly string[] = [
@@ -24,7 +29,9 @@ const INJECTION_LABELS: readonly string[] = [
   '中文系统提示词',
   '角色劫持',
   '命令执行指令',
-  '远程命令下载',
+  '远程命令下载并执行',
+  '编码命令执行',
+  '动态命令执行',
   '破坏性命令',
 ]
 

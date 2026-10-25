@@ -121,10 +121,9 @@ export function buildDigest(items: readonly MemoryRecord[]): string {
   if (skills.length > 0) {
     lines.push('【排错经验（已解决，可直接复用）】')
     for (const item of skills) {
-      const salience = memorySalience(item)
-      const prefix = salience >= 0.8 ? '⚠️ 致命红线 · ' : salience >= 0.55 ? '高显著 · ' : ''
+      // 显著性标记（⚠️ 致命红线 / 高显著）由 perceptionLabel 统一给出，这里不再重复前缀。
       lines.push(
-        `- ${prefix}${(item.errorSignature ?? item.content).slice(0, 60)} → ${(item.resolution ?? '').slice(0, 90)}（${perceptionLabel(item, now)}）`,
+        `- ${(item.errorSignature ?? item.content).slice(0, 60)} → ${(item.resolution ?? '').slice(0, 90)}（${perceptionLabel(item, now)}）`,
       )
     }
   }

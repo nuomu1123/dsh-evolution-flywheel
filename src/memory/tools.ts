@@ -56,7 +56,7 @@ export function memoryListTool(store: MemoryStore): ToolDefinitionLike {
 export function memorySearchTool(store: MemoryStore): ToolDefinitionLike {
   return {
     name: 'memory_search',
-    description: 'Search local dsh-evolution-flywheel memories by text. Results are ranked by hit quality (content > error signature > context > resolution); archived entries are excluded and speculative notes are down-weighted. Multi-word queries require every word to match. Read-only; returns { items, total, truncated } — total is the full match count and truncated=true means more matched than returned (raise limit to see them).',
+    description: 'Search local dsh-evolution-flywheel memories by text. Results are ranked by hit quality (content > error signature > context > resolution); archived entries are excluded and speculative notes are down-weighted. Multi-word queries default to AND; when nothing matches they are automatically relaxed to OR and the response carries relaxed:true (do NOT conclude "not found" from an empty AND). English/digit tokens match on word boundaries (SSE will not hit AssertionError); full-width text is normalized. Read-only; returns { items, total, truncated } — total is the full match count and truncated=true means more matched than returned (raise limit to see them).',
     parameters: {
       type: 'object',
       properties: {
@@ -88,7 +88,13 @@ export function memorySearchTool(store: MemoryStore): ToolDefinitionLike {
       const known: readonly MemoryType[] = ['fact', 'preference', 'skill_error_fix', 'conflict', 'speculative', 'meta_insight', 'mental_model', 'extraction_strategy', 'curation_report', 'cognitive_probe', 'cognitive_brief']
       const options = (known as readonly string[]).includes(requested) ? { type: requested as MemoryType } : {}
       const result = await store.searchWithTotal(query, limit, options)
-      return { items: result.items, total: result.total, truncated: result.total > result.items.length }
+      return {
+        items: result.items,
+        total: result.total,
+        truncated: result.total > result.items.length,
+        // AND 全空时已自动放宽为 OR；告诉调用方，避免误以为「库里没有」。
+        ...(result.relaxed ? { relaxed: true, note: '多词 AND 无结果，已放宽为 OR（按命中词数排序）' } : {}),
+      }
     },
   }
 }
@@ -264,6 +270,8 @@ export function memoryRememberTool(store: MemoryStore): ToolDefinitionLike {
         content: { type: 'string', description: 'The conclusion to remember, 1-2000 characters.' },
         type: { type: 'string', description: 'Memory type; defaults to fact. One of: fact / preference / skill_error_fix / mental_model / meta_insight / extraction_strategy.' },
         context: { type: 'string', description: 'Evidence or provenance: how it was verified, where it came from.' },
+        errorSignature: { type: 'string', description: 'For skill_error_fix: the error signature (≤300 chars). Required for the memory to be recalled as a skill.' },
+        resolution: { type: 'string', description: 'For skill_error_fix: the fix that worked (≤1000 chars). Without it the memory can be searched but never recalled as a skill.' },
         approved: { type: 'boolean', description: 'true when already verified (reproduced, confirmed by tests); defaults to false (suggested, waiting for human decision).' },
       },
       required: ['content'],
@@ -274,24 +282,39 @@ export function memoryRememberTool(store: MemoryStore): ToolDefinitionLike {
       render: renderJson,
     },
     async execute(args: unknown): Promise<unknown> {
-      const record = (args ?? {}) as { content?: unknown; type?: unknown; context?: unknown; approved?: unknown }
+      const record = (args ?? {}) as {
+        content?: unknown
+        type?: unknown
+        context?: unknown
+        approved?: unknown
+        errorSignature?: unknown
+        resolution?: unknown
+      }
       const content = typeof record.content === 'string' ? record.content.trim().slice(0, 2000) : ''
       if (content === '') throw new Error('memory_remember requires non-empty content')
       const requested = typeof record.type === 'string' ? record.type.trim() : ''
       const known: readonly MemoryType[] = ['fact', 'preference', 'skill_error_fix', 'mental_model', 'meta_insight', 'extraction_strategy']
       const type: MemoryType = (known as readonly string[]).includes(requested) ? requested as MemoryType : 'fact'
       const context = typeof record.context === 'string' ? record.context.trim().slice(0, 500) : ''
+      // 结构化字段：没有 resolution 的 skill_error_fix 永远不会进技能召回（只能被搜到）。
+      const errorSignature = typeof record.errorSignature === 'string' ? record.errorSignature.trim().slice(0, 300) : ''
+      const resolution = typeof record.resolution === 'string' ? record.resolution.trim().slice(0, 1000) : ''
       const created = await store.appendSuggested(content, type)
       if (created === undefined) {
         return { ok: false, reason: 'duplicate', message: '内容已存在（完全相同），未重复写入' }
       }
       const item = await store.update(created.id, {
         ...(context === '' ? {} : { context }),
+        ...(errorSignature === '' ? {} : { errorSignature }),
+        ...(resolution === '' ? {} : { resolution }),
         ...(record.approved === true ? { status: 'approved' as const } : {}),
         origin: 'manual',
         originDetail: '主动沉淀',
       })
-      return { ok: true, id: created.id, item: item ?? created }
+      const warning = type === 'skill_error_fix' && resolution === ''
+        ? 'skill_error_fix 缺少 resolution：这条只能被搜到，不会进入技能召回'
+        : undefined
+      return { ok: true, id: created.id, item: item ?? created, ...(warning === undefined ? {} : { warning }) }
     },
   }
 }

@@ -69,7 +69,8 @@ test('摘要过滤褪色记忆，显著红线带警示', () => {
     id: 'mem-hot',
     humanInterventions: 3,
     count: 6,
-    createdAt: new Date(NOW).toISOString(),
+    // 用真实当前时间：buildDigest 内部用的是 Date.now()，固定 NOW 会随日期漂移成「1 天前」。
+    createdAt: new Date().toISOString(),
   })
   const digest = buildDigest([faded, hot])
   assert.doesNotMatch(digest, /测试记忆/)
