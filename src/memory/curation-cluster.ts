@@ -8,7 +8,7 @@
  *
  * 第一版是同进程顺序执行（规则引擎零成本）；跨进程并行要等锁与调度再演进。
  */
-import { buildCurationReport, buildProbeEvidence, shouldRunCuration, summarizeCurationQuality, summarizeCurationWithLlm } from './curator.js'
+import {compactCurationPayload,  buildCurationReport, buildProbeEvidence, shouldRunCuration, summarizeCurationQuality, summarizeCurationWithLlm } from './curator.js'
 import { createProbe } from './probes.js'
 import { memorySalience } from './decay.js'
 import type { MemoryContextBase } from './context.js'
@@ -132,7 +132,7 @@ export function registerCurationSchedule(
       const created = await store.appendSuggested(`整理报告：${payload.summary}`, 'curation_report')
       if (created === undefined) return
       const updated = await store.update(created.id, {
-        reportJson: JSON.stringify(payload),
+        reportJson: JSON.stringify(compactCurationPayload(payload)),
         ...(llm === undefined ? {} : { reviewTokens: llm.tokensUsed }),
         origin: 'curation',
         originDetail: '后台集群整理（待人类裁决）',

@@ -1207,3 +1207,31 @@ test('自诊断在没有问题时给出正常结论，而不是空数组', async
   assert.equal(d.suggestions.length, 1)
   assert.match(d.suggestions[0], /没有需要处理的问题/)
 })
+
+// 报告存储裁剪（2026-10-25 子 Agent 反馈）：旧实现 JSON.stringify 后被 store 层硬截断，
+// keep 吃光配额，highValue/merge/undecided 全丢，报告里那些数字点不开。
+test('整理报告存储前裁剪明细，JSON 完整且关键统计不丢', async () => {
+  const { buildCurationReport, compactCurationPayload, parseCurationPayload } = await import('../lib/memory/curator.js')
+  const now = Date.now()
+  const iso = new Date(now).toISOString()
+  const items = Array.from({ length: 60 }, (_, index) => ({
+    id: `mem-${index}`,
+    content: `一条比较长的记忆内容 ${index}，用来把报告撑大。`.repeat(8),
+    type: 'fact',
+    status: 'approved',
+    createdAt: iso,
+  }))
+  const report = buildCurationReport(items, now, 'manual')
+  assert.ok(report.keep.length > 20, '原始报告明细应足够多')
+
+  const compacted = compactCurationPayload(report)
+  assert.equal(compacted.keep.length, 20)
+  assert.equal(compacted.stats.undecided, report.stats.undecided, '关键统计不能丢')
+
+  const json = JSON.stringify(compacted)
+  assert.ok(json.length < 16000, `裁剪后应小于 16000，实际 ${json.length}`)
+  const parsed = parseCurationPayload(json)
+  assert.ok(parsed !== undefined, '裁剪后必须仍能解析')
+  assert.equal(parsed.stats.undecided, report.stats.undecided)
+  assert.equal(parsed.total, report.total)
+})

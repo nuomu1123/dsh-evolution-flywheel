@@ -131,7 +131,13 @@ export function buildCurationReport(
   now = Date.now(),
   trigger: CurationTrigger = 'manual',
 ): CurationReportPayload {
-  const active = items.filter(item => item.archived !== true)
+  // 元数据类（整理报告 / 探针 / 简报）不是「记忆」，不计入库容与保留率：
+  // 否则报告会把自己算进去，数字随自我喂养虚高（2026-10-25 子 Agent 反馈）。
+  // 它们仍然留在库里、仍可被 UI 展示，只是不参与「有多少条记忆」的统计。
+  const active = items.filter(item => item.archived !== true
+    && item.type !== 'curation_report'
+    && item.type !== 'cognitive_probe'
+    && item.type !== 'cognitive_brief')
   const keep: CurationItem[] = []
   const archive: CurationItem[] = []
   const highValue: CurationItem[] = []
@@ -414,4 +420,23 @@ export function similarErrorGroups(items: readonly MemoryRecord[], minSize = 2):
     groups.set(signature, group)
   }
   return [...groups.values()].filter(group => group.ids.length >= minSize)
+}
+
+/**
+ * 存储前裁剪报告明细：各数组只留前 N 条，保证 JSON 能在 16000 字符内**完整**保存。
+ *
+ * 2026-10-25 子 Agent 反馈：旧实现直接 JSON.stringify 后被 store 层硬截断，
+ * keep 数组吃光配额，highValue/merge/undecided/risks 全部丢失——
+ * 报告里「高价值 4 条」「待裁决 24 条」根本点不开。
+ * 这里按字段优先级裁剪，宁可少列明细，也不让 JSON 变形。
+ */
+export function compactCurationPayload(payload: CurationReportPayload): CurationReportPayload {
+  return {
+    ...payload,
+    keep: payload.keep.slice(0, 20),
+    archive: payload.archive.slice(0, 10),
+    highValue: payload.highValue.slice(0, 10),
+    merge: payload.merge.slice(0, 10),
+    risks: payload.risks.slice(0, 10),
+  }
 }

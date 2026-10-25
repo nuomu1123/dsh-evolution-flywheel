@@ -20,7 +20,7 @@ import { summarizeUsage } from './usage.js'
 import type { SkillReviewEngine } from './state-machine.js'
 import { createStrategyHooks } from './strategy.js'
 import type { MemoryContextBase } from './context.js'
-import { archiveIdsOf, buildProbeEvidence, contentSimilarity, parseCurationPayload, similarErrorGroups, summarizeCurationQuality, summarizeCurationWithLlm } from './curator.js'
+import { archiveIdsOf, buildProbeEvidence, compactCurationPayload, contentSimilarity, parseCurationPayload, similarErrorGroups, summarizeCurationQuality, summarizeCurationWithLlm } from './curator.js'
 import { buildSelfDiagnosis, isStuckReview } from './diagnosis.js'
 import { extractJson } from './dma.js'
 import { runCurationCluster } from './curation-cluster.js'
@@ -270,7 +270,7 @@ export async function handleMemoryApi(
         return
       }
       const updated = await store.update(created.id, {
-        reportJson: JSON.stringify(payload),
+        reportJson: JSON.stringify(compactCurationPayload(payload)),
         ...(llm === undefined ? {} : { reviewTokens: llm.tokensUsed }),
         origin: 'curation',
         originDetail: '规则整理（待人类裁决）',

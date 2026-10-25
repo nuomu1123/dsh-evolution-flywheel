@@ -57,7 +57,11 @@ export interface SelfDiagnosis {
 
 /** 汇总一份健康报告；纯函数，不读文件、不调模型。 */
 export function buildSelfDiagnosis(items: readonly MemoryRecord[]): SelfDiagnosis {
-  const active = items.filter(item => item.archived !== true)
+  // 与整理报告口径一致：元数据类不计入「有多少条记忆」（2026-10-25 子 Agent 反馈）。
+  const active = items.filter(item => item.archived !== true
+    && item.type !== 'curation_report'
+    && item.type !== 'cognitive_probe'
+    && item.type !== 'cognitive_brief')
   const byStatus: Record<string, number> = {}
   for (const item of active) {
     byStatus[item.status] = (byStatus[item.status] ?? 0) + 1
