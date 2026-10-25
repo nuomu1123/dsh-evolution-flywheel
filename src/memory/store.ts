@@ -770,8 +770,16 @@ export class MemoryStore {
    * 只有 1 条有用（其余是跨学科漫游）。现在按命中质量排序，并支持按类型过滤。
    */
   search(query: string, limit = 10, options: MemorySearchOptions = {}): Promise<MemoryRecord[]> {
+    return this.searchWithTotal(query, limit, options).then(result => result.items)
+  }
+
+  /**
+   * 与 search 相同，但附带**命中总数**，让调用方知道「只返回了前 N 条」。
+   * 2026-10-25 子 Agent 反馈：搜「EIO」有 15 条命中却只回 3 条，没有任何提示。
+   */
+  searchWithTotal(query: string, limit = 10, options: MemorySearchOptions = {}): Promise<{ items: MemoryRecord[]; total: number }> {
     const text = query.trim().toLowerCase()
-    if (text === '') return Promise.resolve([])
+    if (text === '') return Promise.resolve({ items: [], total: 0 })
     const types = options.type === undefined
       ? undefined
       : new Set<MemoryType>(Array.isArray(options.type) ? options.type : [options.type])
@@ -800,7 +808,8 @@ export class MemoryStore {
       }
       scored.sort((left, right) =>
         right.score - left.score || right.item.createdAt.localeCompare(left.item.createdAt))
-      return scored.slice(0, Math.max(1, Math.min(50, limit))).map(entry => entry.item)
+      const capped = scored.slice(0, Math.max(1, Math.min(50, limit))).map(entry => entry.item)
+      return { items: capped, total: scored.length }
     })
   }
 

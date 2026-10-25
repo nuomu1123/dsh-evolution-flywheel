@@ -56,7 +56,7 @@ export function memoryListTool(store: MemoryStore): ToolDefinitionLike {
 export function memorySearchTool(store: MemoryStore): ToolDefinitionLike {
   return {
     name: 'memory_search',
-    description: 'Search local dsh-evolution-flywheel memories by text. Results are ranked by hit quality (content > error signature > context > resolution); archived entries are excluded and speculative notes are down-weighted. Read-only; returns matching memory records.',
+    description: 'Search local dsh-evolution-flywheel memories by text. Results are ranked by hit quality (content > error signature > context > resolution); archived entries are excluded and speculative notes are down-weighted. Multi-word queries require every word to match. Read-only; returns { items, total, truncated } — total is the full match count and truncated=true means more matched than returned (raise limit to see them).',
     parameters: {
       type: 'object',
       properties: {
@@ -68,10 +68,18 @@ export function memorySearchTool(store: MemoryStore): ToolDefinitionLike {
       additionalProperties: false,
     },
     output: {
-      schema: { type: 'array', items: MEMORY_ITEM_SCHEMA },
+      schema: {
+        type: 'object',
+        properties: {
+          items: { type: 'array', items: MEMORY_ITEM_SCHEMA },
+          total: { type: 'number' },
+          truncated: { type: 'boolean' },
+        },
+        additionalProperties: false,
+      },
       render: renderJson,
     },
-    async execute(args: unknown): Promise<MemoryRecord[]> {
+    async execute(args: unknown): Promise<{ items: MemoryRecord[]; total: number; truncated: boolean }> {
       const record = (args ?? {}) as { query?: unknown; limit?: unknown; type?: unknown }
       const query = typeof record.query === 'string' ? record.query : ''
       const limit = typeof record.limit === 'number' && Number.isFinite(record.limit) ? record.limit : 10
@@ -79,7 +87,8 @@ export function memorySearchTool(store: MemoryStore): ToolDefinitionLike {
       const requested = typeof record.type === 'string' ? record.type.trim() : ''
       const known: readonly MemoryType[] = ['fact', 'preference', 'skill_error_fix', 'conflict', 'speculative', 'meta_insight', 'mental_model', 'extraction_strategy', 'curation_report', 'cognitive_probe', 'cognitive_brief']
       const options = (known as readonly string[]).includes(requested) ? { type: requested as MemoryType } : {}
-      return store.search(query, limit, options)
+      const result = await store.searchWithTotal(query, limit, options)
+      return { items: result.items, total: result.total, truncated: result.total > result.items.length }
     },
   }
 }

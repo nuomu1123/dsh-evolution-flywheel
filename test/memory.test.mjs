@@ -1258,3 +1258,21 @@ test('多词查询按 AND 语义，每个词都要命中', async () => {
     assert.ok(single.some(item => item.id === b.id))
   })
 })
+
+// 检索不透明（2026-10-25 子 Agent 反馈）：搜「EIO」有 15 条命中却只回 3 条，
+// 没有任何「还有更多」的提示。searchWithTotal 现在返回命中总数。
+test('searchWithTotal 返回命中总数与截断信息', async () => {
+  await withStore(async (store) => {
+    for (let index = 0; index < 5; index += 1) {
+      await store.appendSuggested(`插件测试记录编号 ${index}`, 'fact')
+    }
+    const full = await store.searchWithTotal('插件测试记录', 10)
+    assert.ok(full.total >= 5, `命中总数应 >= 5，实际 ${full.total}`)
+    assert.equal(full.items.length, full.total)
+
+    const limited = await store.searchWithTotal('插件测试记录', 2)
+    assert.equal(limited.items.length, 2)
+    assert.ok(limited.total >= 5)
+    assert.ok(limited.total > limited.items.length, '总数应大于返回数')
+  })
+})
