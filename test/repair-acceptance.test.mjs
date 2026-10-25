@@ -18,7 +18,7 @@ import { sanitizeText } from '../lib/memory/sanitize.js'
 import { buildSkillCandidate } from '../lib/memory/skill-extractor.js'
 import { pickDistillSeeds } from '../lib/memory/model-distill.js'
 import { tabCounts } from '../src/client/logic.ts'
-import { memoryRememberTool } from '../lib/memory/tools.js'
+import { memoryRememberTool, memorySearchTool } from '../lib/memory/tools.js'
 import { MemoryStore } from '../lib/memory/store.js'
 import { summarizeUsage } from '../lib/memory/usage.js'
 
@@ -408,4 +408,22 @@ test('褪色优先提炼：结果不超过上限', () => {
     createdAt: new Date(Date.now() - index * 86_400_000).toISOString(),
   }))
   assert.equal(pickDistillSeeds(items, 8).length, 8)
+})
+
+test('memory_search 返回字段必须全部在 output schema 声明内（否则工具整体报错）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-search-contract-'))
+  try {
+    const store = new MemoryStore(dir)
+    await store.appendSuggested('Windows 路径问题', 'fact')
+    await store.appendSuggested('Node EIO 处理', 'fact')
+    const tool = memorySearchTool(store)
+    const result = await tool.execute({ query: 'Windows Node', limit: 5 })
+    assert.equal(result.relaxed, true, 'AND 全空时应放宽为 OR')
+    const allowed = new Set(Object.keys(tool.output.schema.properties))
+    for (const key of Object.keys(result)) {
+      assert.ok(allowed.has(key), `返回字段 ${key} 未在 output schema 声明（additionalProperties:false 会拒绝整个返回值）`)
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })

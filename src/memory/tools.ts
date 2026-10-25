@@ -74,6 +74,9 @@ export function memorySearchTool(store: MemoryStore): ToolDefinitionLike {
           items: { type: 'array', items: MEMORY_ITEM_SCHEMA },
           total: { type: 'number' },
           truncated: { type: 'boolean' },
+          // AND 全空自动放宽为 OR 时返回；漏声明会让 additionalProperties:false 直接拒绝整个返回值。
+          relaxed: { type: 'boolean' },
+          note: { type: 'string' },
         },
         additionalProperties: false,
       },
