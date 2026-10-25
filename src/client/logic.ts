@@ -438,12 +438,12 @@ export function auditSummary(items: readonly MemoryItem[]): AuditSummary {
   return summary
 }
 
-/** 各分区卡片数量，用于 Tab 徽标。 */
-export function tabCounts(items: readonly MemoryItem[]): Record<FilterTab, number> {
+/** 各分区卡片数量，用于 Tab 徽标。`keyword` 非空时徽标随搜索变化（P1-7）。 */
+export function tabCounts(items: readonly MemoryItem[], keyword = ''): Record<FilterTab, number> {
   const counts: Record<FilterTab, number> = { all: 0, basic: 0, skill: 0, dma: 0, human: 0, debate: 0, audit: 0, model: 0, strategy: 0, curation: 0, probe: 0 }
   for (const item of items) {
     for (const tab of Object.keys(counts) as FilterTab[]) {
-      if (matchesFilter(item, tab, '')) counts[tab] += 1
+      if (matchesFilter(item, tab, keyword)) counts[tab] += 1
     }
   }
   return counts

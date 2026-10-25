@@ -1443,7 +1443,23 @@ function MemoryExplorerPage() {
   // 待人类裁决里有相当比例其实是「模型故障」遗留，可以自动重试，不该让人逐条审。
   const [retrying, setRetrying] = React.useState(false)
   const [probeDeciding, setProbeDeciding] = React.useState(null)
-  const [density, setDensity] = React.useState('standard')
+  // 密度持久化：之前只存在内存里，切页面/刷新就回「标准」（P2-9）。
+  const [density, setDensity] = React.useState(() => {
+    try {
+      const saved = window.localStorage.getItem('flywheelDensity')
+      return saved === 'compact' || saved === 'large' ? saved : 'standard'
+    } catch {
+      return 'standard'
+    }
+  })
+  const changeDensity = (level: 'compact' | 'standard' | 'large'): void => {
+    setDensity(level)
+    try {
+      window.localStorage.setItem('flywheelDensity', level)
+    } catch {
+      // 隐私模式等场景写不了，忽略即可。
+    }
+  }
   // 批量确认的结果提示（2026-10-25：57 条待处理没法逐条点）
   const [batchNotice, setBatchNotice] = React.useState('')
   // 批量确认要两步：第一次只说明范围，第二次才真正提交（Host 同样要求 confirm:true）。
@@ -1455,6 +1471,9 @@ function MemoryExplorerPage() {
     return () => clearTimeout(timer)
   }, [batchNotice])
   const pageRef = React.useRef(null)
+  // 详情是「单卡替换列表」，返回时必须把滚动位置还回去，否则 34 条队列每进一次详情都回顶部（P1-10）。
+  const listRef = React.useRef(null)
+  const listScrollTop = React.useRef(0)
   const loadSeqRef = React.useRef(0)
   // SSE 帧日志：静默对账时把「快照请求之后收到的帧」按 id 盖回快照，避免整表替换吞掉事件。
   const frameLogRef = React.useRef(new Map<string, StreamFrameRecord>())
@@ -1762,11 +1781,22 @@ function MemoryExplorerPage() {
     ? filtered.slice(0, visibleCount)
     : filtered.filter((item: MemoryItem) => item.id === detailId)
 
+  /** 进详情前记住列表滚动位置，返回时还原。 */
+  const openDetail = (id: string): void => {
+    listScrollTop.current = listRef.current?.scrollTop ?? 0
+    setDetailId(id)
+  }
+
   const closeDetail = () => {
     if (detailId !== null) {
       setExpanded((previous: Record<string, boolean>) => ({ ...previous, [detailId]: false }))
     }
     setDetailId(null)
+    if (typeof window !== 'undefined') {
+      window.requestAnimationFrame(() => {
+        if (listRef.current !== null) listRef.current.scrollTop = listScrollTop.current
+      })
+    }
   }
 
   const distill = async () => {
@@ -2156,12 +2186,21 @@ function MemoryExplorerPage() {
     }
   }
 
+  // 空态要说清「当前分区 + 关键词」是叠加的，否则用户会以为记忆被删了（P1-8）。
+  const activeTabLabel = FILTER_TABS.find(tab => tab.id === activeTab)?.label ?? '全部'
+  const emptyKeyword = query.trim()
   const empty = h('div', { key: 'empty', style: memoryStyles.empty }, activeTab === 'strategy'
-    ? (query.trim() === ''
+    ? (emptyKeyword === ''
       ? '方法论库还是空的：跑一次小提炼或大提炼，系统会自己沉淀提炼策略'
-      : '没有匹配的方法论')
-    : query.trim() === '' ? '暂无记忆' : '没有匹配的记忆')
-  const counts = React.useMemo(() => tabCounts(items), [items])
+      : `「方法论库」里没有匹配「${emptyKeyword}」的记忆 · 试试切到「全部」`)
+    : emptyKeyword === ''
+      ? `「${activeTabLabel}」里暂无记忆`
+      : `「${activeTabLabel}」里没有匹配「${emptyKeyword}」的记忆 · 搜索与分区是叠加的，试试切到「全部」`)
+  // 徽标随搜索变化：否则「排错飞轮 114」但搜到 0 条，数字自相矛盾（P1-7）。
+  const counts = React.useMemo(
+    () => tabCounts(items, query.trim().toLowerCase()),
+    [items, query],
+  )
   const audit = React.useMemo(() => auditSummary(items), [items])
   const humanCount = items.filter((item: MemoryItem) => item.status === 'human_intervention').length
   const suggestedCount = items.filter((item: MemoryItem) => item.status === 'suggested').length
@@ -2476,7 +2515,7 @@ function MemoryExplorerPage() {
         key: `density-${level}`,
         type: 'button',
         style: density === level ? { ...memoryStyles.button, ...memoryStyles.tabActive } : memoryStyles.button,
-        onClick: () => setDensity(level),
+        onClick: () => changeDensity(level),
       }, level === 'compact' ? '紧凑' : level === 'standard' ? '标准' : '大')),
     ]),
     // 断连兜底：琥珀色状态条，不占用红色错误块，也不阻塞列表浏览。
@@ -2512,7 +2551,7 @@ function MemoryExplorerPage() {
       ])
       : null,
     loading ? h('div', { key: 'loading', style: memoryStyles.empty }, '加载中…') : null,
-    !loading ? h('div', { key: 'list', style: memoryStyles.list },
+    !loading ? h('div', { key: 'list', ref: listRef, style: memoryStyles.list },
       visibleItems.length === 0
         ? [detailId === null ? empty : h('div', { key: 'missing', style: memoryStyles.empty }, '该卡片已不存在')]
         : visibleItems.map((item: MemoryItem) => {
@@ -2657,7 +2696,7 @@ function MemoryExplorerPage() {
                 key: 'detail-link',
                 type: 'button',
                 style: memoryStyles.detailLink,
-                onClick: () => setDetailId(item.id),
+                onClick: () => openDetail(item.id),
               }, '详情 →'),
             isExpanded && item.type === 'skill_error_fix'
               ? h('div', { key: 'detail', style: memoryStyles.detail }, [
@@ -3056,7 +3095,7 @@ function MemoryExplorerPage() {
                 style: memoryStyles.save,
                 onClick: () => {
                   setActiveTab('debate')
-                  setDetailId(item.id)
+                  openDetail(item.id)
                 },
               }, '去辩论空间')
               : null,

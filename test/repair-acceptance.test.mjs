@@ -16,6 +16,7 @@ import { appendAudit, readAudit } from '../lib/audit.js'
 import { buildDigest } from '../lib/memory/recall.js'
 import { sanitizeText } from '../lib/memory/sanitize.js'
 import { buildSkillCandidate } from '../lib/memory/skill-extractor.js'
+import { tabCounts } from '../src/client/logic.ts'
 import { memoryRememberTool } from '../lib/memory/tools.js'
 import { MemoryStore } from '../lib/memory/store.js'
 import { summarizeUsage } from '../lib/memory/usage.js'
@@ -254,4 +255,13 @@ test('错误签名：只有退出码时补上命令首词（不再 8 条失败�
     context: '工具 pwsh 执行失败；参数摘要：{"command":"npm run build && npm test"}',
   })
   assert.match(candidate.errorSignature, /npm run build/u, '签名应带命令首词以增加区分度')
+})
+
+test('tab 徽标随关键词变化（不再「114 条里搜到 0 条但徽标仍 114」）', () => {
+  const items = [
+    record({ id: 'mem-alpha', content: 'alpha 内容' }),
+    record({ id: 'mem-beta', content: 'beta 内容' }),
+  ]
+  assert.equal(tabCounts(items).all, 2)
+  assert.equal(tabCounts(items, 'alpha').all, 1, '带关键词时徽标应只统计命中数')
 })
