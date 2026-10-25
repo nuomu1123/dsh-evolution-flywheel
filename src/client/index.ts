@@ -397,6 +397,10 @@ const memoryStyles = {
     flexShrink: 0,
     minWidth: '240px',
     minHeight: '96px',
+    // 原生「虚拟滚动」：让浏览器跳过视口外卡片的布局与绘制（Chrome 85+）。
+    // 比手写虚拟列表安全得多——不必重构卡片，也不影响搜索与滚动锚点。
+    contentVisibility: 'auto',
+    containIntrinsicSize: 'auto 120px',
     maxWidth: '100%',
   },
   itemMain: {
@@ -1336,6 +1340,18 @@ function renderInsightCard(content: string, expanded: boolean, fontSize: string)
     ])),
   ])
 }
+
+/**
+ * 五步卡记忆化：props 浅比较相等时跳过 `parseMetaInsight` 与整棵子树重建
+ * （折叠/展开与 SSE 刷新时，五步卡是全列表里最贵的一块 DOM）。
+ */
+const InsightCard = React.memo(function InsightCard(props: {
+  text: string
+  expanded: boolean
+  fontSize: string
+}) {
+  return renderInsightCard(props.text, props.expanded, props.fontSize)
+})
 
 /** 帧日志上限：只保留最近 200 个 id 的对账依据，避免无限增长。 */
 const FRAME_LOG_LIMIT = 200
@@ -2788,11 +2804,11 @@ function MemoryExplorerPage() {
             h('div', { key: 'provenance', style: memoryStyles.provenance },
               `创建 ${formatMemoryTime(item.createdAt)} · 来源 ${originLabel(item.origin)}${item.discipline === undefined ? '' : ` · ${item.discipline}`} · ${perceptionLabel(item)}`),
             item.type === 'meta_insight'
-              ? renderInsightCard(
-                item.content,
-                isExpanded,
-                CARD_DENSITY[density as keyof typeof CARD_DENSITY].fontSize,
-              )
+              ? h(InsightCard, {
+                text: item.content,
+                expanded: isExpanded,
+                fontSize: CARD_DENSITY[density as keyof typeof CARD_DENSITY].fontSize,
+              })
               : h('div', {
                 key: 'content',
                 style: isExpanded
