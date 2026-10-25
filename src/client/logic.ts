@@ -28,6 +28,8 @@ export interface MemoryItem {
   errorSignature?: string
   context?: string
   resolution?: string
+  /** 解法来源：inferred=模型推测（默认）；verified=人类确认或探针验证。 */
+  resolutionSource?: 'inferred' | 'verified'
   reviewReason?: string
   debateSummary?: string
   metaInsight?: string

@@ -576,6 +576,14 @@ const memoryStyles = {
     fontWeight: 600,
     marginTop: '2px',
   },
+  sourceVerified: {
+    marginLeft: '6px', padding: '1px 6px', fontSize: '11px', borderRadius: '4px',
+    background: '#e6f4ea', color: '#1e7e34', fontWeight: 600,
+  },
+  sourceInferred: {
+    marginLeft: '6px', padding: '1px 6px', fontSize: '11px', borderRadius: '4px',
+    background: '#fff4e5', color: '#b26a00', fontWeight: 600,
+  },
   resolutionInput: {
     width: '100%',
     minHeight: '52px',
@@ -1303,6 +1311,8 @@ function MemoryExplorerPage() {
   const [curating, setCurating] = React.useState(false)
   const [probeDeciding, setProbeDeciding] = React.useState(null)
   const [density, setDensity] = React.useState('standard')
+  // 批量确认的结果提示（2026-10-25：57 条待处理没法逐条点）
+  const [batchNotice, setBatchNotice] = React.useState('')
   const pageRef = React.useRef(null)
   const loadSeqRef = React.useRef(0)
   const [pageVisible, setPageVisible] = React.useState(false)
@@ -1352,6 +1362,23 @@ function MemoryExplorerPage() {
     } catch (error) {
       // 遥测失败不阻塞主列表；保留上一次成功的数据，但必须可见。
       setTelemetryError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  /** 批量确认全部 suggested 草稿；结果写在统计卡下方。 */
+  const approveSuggested = async (): Promise<void> => {
+    try {
+      const response = await fetch(`${MEMORY_API}/approve/batch`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+      const body = await response.json() as { ok?: boolean; approved?: number; candidates?: number; error?: string }
+      if (!response.ok || body.ok !== true) throw new Error(body.error ?? `HTTP ${response.status}`)
+      setBatchNotice(`已确认 ${body.approved ?? 0} 条（候选 ${body.candidates ?? 0}）`)
+      await load()
+    } catch (error) {
+      setBatchNotice(`批量确认失败：${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -1845,6 +1872,7 @@ function MemoryExplorerPage() {
   const counts = React.useMemo(() => tabCounts(items), [items])
   const audit = React.useMemo(() => auditSummary(items), [items])
   const humanCount = items.filter((item: MemoryItem) => item.status === 'human_intervention').length
+  const suggestedCount = items.filter((item: MemoryItem) => item.status === 'suggested').length
   const debatingCount = items.filter((item: MemoryItem) => item.status === 'debating').length
   const debateTotal = items.filter((item: MemoryItem) =>
     item.type === 'skill_error_fix' && hasDebateRecord(item)).length
@@ -1886,6 +1914,16 @@ function MemoryExplorerPage() {
       h('div', { key: 'human', style: { ...memoryStyles.stat, ...memoryStyles.statDanger } }, [
         h('span', { key: 'label', style: memoryStyles.statLabel }, '待人类裁决'),
         h('span', { key: 'value', style: memoryStyles.statValue }, String(humanCount)),
+      ]),
+      h('div', {
+        key: 'suggested',
+        style: { ...memoryStyles.stat, ...memoryStyles.statInfo, cursor: 'pointer' },
+        onClick: () => { void approveSuggested() },
+        title: '点击批量确认全部待确认草稿',
+      }, [
+        h('span', { key: 'label', style: memoryStyles.statLabel }, suggestedCount === 0 ? '待确认 · 暂无草稿' : '待确认 · 点击批量确认'),
+        h('span', { key: 'value', style: memoryStyles.statValue }, String(suggestedCount)),
+        batchNotice === '' ? null : h('span', { key: 'notice', style: { fontSize: '11px', color: '#666666' } }, batchNotice),
       ]),
       h('div', { key: 'spec', style: { ...memoryStyles.stat, ...memoryStyles.statInfo } }, [
         h('span', { key: 'label', style: memoryStyles.statLabel }, '今日漫游'),
@@ -2462,7 +2500,14 @@ function MemoryExplorerPage() {
               : null,
             item.type === 'skill_error_fix'
               ? h('div', { key: 'resolution' }, [
-                h('div', { key: 'label', style: memoryStyles.resolutionLabel }, '解决办法'),
+                h('div', { key: 'label', style: memoryStyles.resolutionLabel }, [
+        '解决办法',
+        // 2026-10-25 人类视角体验发现：resolutionSource 只存在数据层，界面看不到。
+        // 在这里把「推测 / 已验证」摆出来——否则用户永远不知道这条解法是不是模型猜的。
+        item.resolutionSource === 'verified'
+          ? h('span', { key: 'badge', style: memoryStyles.sourceVerified }, '✓ 已验证')
+          : h('span', { key: 'badge', style: memoryStyles.sourceInferred }, '推测 · 未验证'),
+      ]),
                 h('textarea', {
                   key: 'input',
                   style: memoryStyles.resolutionInput,

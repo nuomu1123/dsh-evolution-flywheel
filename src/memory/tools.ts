@@ -56,12 +56,13 @@ export function memoryListTool(store: MemoryStore): ToolDefinitionLike {
 export function memorySearchTool(store: MemoryStore): ToolDefinitionLike {
   return {
     name: 'memory_search',
-    description: 'Search local dsh-evolution-flywheel memories by text. Read-only; returns matching memory records.',
+    description: 'Search local dsh-evolution-flywheel memories by text. Results are ranked by hit quality (content > error signature > context > resolution); archived entries are excluded and speculative notes are down-weighted. Read-only; returns matching memory records.',
     parameters: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Text to search for.' },
         limit: { type: 'number', description: 'Maximum results, 1-50; defaults to 10.' },
+        type: { type: 'string', description: 'Optional memory type filter: fact / preference / skill_error_fix / speculative / meta_insight / mental_model / extraction_strategy / curation_report / cognitive_probe / cognitive_brief.' },
       },
       required: ['query'],
       additionalProperties: false,
@@ -188,9 +189,10 @@ export function memoryProbeTool(store: MemoryStore): ToolDefinitionLike {
       const item = await store.update(id, {
         verifiedAt: now,
         confidence: nextConfidence,
-        // 探针验证成立 = 这条排错经验的解法被现实检验过。
-        ...(verified && typeof current.resolution === 'string' && current.resolution.trim() !== ''
-          ? { resolutionSource: 'verified' as const }
+        // 探针结论要双向落地（2026-10-25 子 Agent 反馈发现的 bug）：
+        // 成立标 verified；被推翻必须退回 inferred，否则被推翻的解法会继续冒充「已验证」。
+        ...(typeof current.resolution === 'string' && current.resolution.trim() !== ''
+          ? { resolutionSource: verified ? 'verified' as const : 'inferred' as const }
           : {}),
         trace: [
           ...(current.trace ?? []),

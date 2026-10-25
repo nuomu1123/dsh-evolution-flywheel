@@ -223,11 +223,23 @@ export async function handleMemoryApi(
         sendJson(res, 200, { ok: false, error: '还没有整理报告，先运行一次整理' })
         return
       }
+      // 报告是快照，列表是实时：附上当前总数与「报告之后新增多少」，
+      // 避免出现「报告说 119 条、列表显示 143 条」这种数字打架（2026-10-25 体验发现）。
+      const activeItems = items.filter(item => item.archived !== true)
+      const reportAt = Date.parse(report.createdAt)
+      const sinceReport = Number.isFinite(reportAt)
+        ? activeItems.filter(item => {
+          const created = Date.parse(item.createdAt)
+          return Number.isFinite(created) && created > reportAt
+        }).length
+        : 0
       sendJson(res, 200, {
         ok: true,
         report,
         payload: parseCurationPayload(report.reportJson),
         quality: summarizeCurationQuality(items),
+        currentTotal: activeItems.length,
+        sinceReport,
       })
       return
     }
@@ -769,6 +781,41 @@ export async function handleMemoryApi(
         ...(halted === '' ? {} : { halted }),
         details,
       })
+      return
+    }
+
+    // 批量确认：把 suggested 草稿一次性确认（可限定类型）。
+    // 2026-10-25 人类视角体验：57 条待处理没法逐条点，真人看到会直接关面板。
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/approve/batch`) {
+      if (!requireJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
+        return
+      }
+      const body = await readJsonBody(req)
+      // 防误触（2026-10-25 真实事故）：批量写端点只要有请求就执行，
+      // 我用空 body 探测端点时把 37 条草稿全确认了。写操作必须显式确认。
+      if (body.confirm !== true) {
+        sendJson(res, 400, { ok: false, error: '批量确认需要 body.confirm === true（防止探测或误请求直接执行）' })
+        return
+      }
+      const type = typeof body.type === 'string' ? body.type.trim() : ''
+      const requested = typeof body.limit === 'number' && Number.isFinite(body.limit) ? Math.trunc(body.limit) : 50
+      const limit = Math.max(1, Math.min(200, requested))
+      const items = await store.list()
+      const candidates = items
+        .filter(item => item.status === 'suggested' && item.archived !== true)
+        .filter(item => type === '' || item.type === type)
+        .slice(0, limit)
+      let approved = 0
+      for (const item of candidates) {
+        const updated = await store.approve(item.id)
+        if (updated !== undefined) {
+          approved += 1
+          events.publish({ type: 'memory:updated', item: updated })
+        }
+      }
+      appendAudit('memory.approve.batch', { type, candidates: candidates.length, approved })
+      sendJson(res, 200, { ok: true, type, candidates: candidates.length, approved })
       return
     }
 
