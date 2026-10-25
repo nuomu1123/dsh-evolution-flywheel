@@ -1416,6 +1416,8 @@ function MemoryExplorerPage() {
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState('')
   const [deleting, setDeleting] = React.useState(null)
+  // 删除/丢弃是硬删除，必须两步确认：第一次点击只把按钮变成「确认删除？」，3 秒无操作自动复原。
+  const [confirmingId, setConfirmingId] = React.useState(null)
   const [approving, setApproving] = React.useState(null)
   const [saving, setSaving] = React.useState(null)
   const [humanDeciding, setHumanDeciding] = React.useState(null)
@@ -1441,6 +1443,14 @@ function MemoryExplorerPage() {
   const [density, setDensity] = React.useState('standard')
   // 批量确认的结果提示（2026-10-25：57 条待处理没法逐条点）
   const [batchNotice, setBatchNotice] = React.useState('')
+  // 批量确认要两步：第一次只说明范围，第二次才真正提交（Host 同样要求 confirm:true）。
+  const [batchArmed, setBatchArmed] = React.useState(false)
+  // 提示不常驻：8 秒后自动消失，避免一次失败文案挂到下次操作（P2-10）。
+  React.useEffect(() => {
+    if (batchNotice === '') return
+    const timer = setTimeout(() => setBatchNotice(''), 8000)
+    return () => clearTimeout(timer)
+  }, [batchNotice])
   const pageRef = React.useRef(null)
   const loadSeqRef = React.useRef(0)
   // SSE 帧日志：静默对账时把「快照请求之后收到的帧」按 id 盖回快照，避免整表替换吞掉事件。
@@ -1500,11 +1510,18 @@ function MemoryExplorerPage() {
 
   /** 批量确认全部 suggested 草稿；结果写在统计卡下方。 */
   const approveSuggested = async (): Promise<void> => {
+    // 第一步只报范围，第二步才提交：避免误点把所有草稿一次批准。
+    if (!batchArmed) {
+      setBatchArmed(true)
+      setBatchNotice(`将确认全部 ${suggestedCount} 条待确认草稿（不受当前筛选影响），再点一次确认`)
+      return
+    }
+    setBatchArmed(false)
     try {
       const response = await fetch(`${MEMORY_API}/approve/batch`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: '{}',
+        body: JSON.stringify({ confirm: true }),
       })
       const body = await response.json() as { ok?: boolean; approved?: number; candidates?: number; error?: string }
       if (!response.ok || body.ok !== true) throw new Error(body.error ?? `HTTP ${response.status}`)
@@ -1905,11 +1922,22 @@ function MemoryExplorerPage() {
     }
   }
 
+  /** 删除/丢弃的两步确认：先上膛，再执行；3 秒无操作自动复原。 */
+  const armConfirm = (id: string): void => {
+    setConfirmingId(id)
+    if (typeof window !== 'undefined') {
+      window.setTimeout(() => {
+        setConfirmingId((current: string | null) => (current === id ? null : current))
+      }, 3000)
+    }
+  }
+
   const remove = async (item: MemoryItem) => {
     const id = item.id
     // 提炼策略/法则是可追溯资产：丢弃只置为 rejected，不物理删除。
     const soft = item.type === 'extraction_strategy'
     setDeleting(id)
+    setConfirmingId(null)
     setError('')
     try {
       const response = await fetch(`${MEMORY_API}/${soft ? 'reject' : 'delete'}`, {
@@ -1928,6 +1956,7 @@ function MemoryExplorerPage() {
         setItems((previous: MemoryItem[]) => previous.filter(existing => existing.id !== id))
       }
       setDetailId(null)
+      setBatchNotice(soft ? '已丢弃（保留原文可追溯）' : '已删除，本条不可恢复')
     } catch (caught) {
       setError((caught as Error)?.message || (soft ? '丢弃失败' : '删除失败'))
     } finally {
@@ -1983,6 +2012,8 @@ function MemoryExplorerPage() {
       }
       setItems((previous: MemoryItem[]) => previous.map(existing => existing.id === item.id ? body.item : existing))
       setDetailId(null)
+      // 成功必须可见：否则卡片消失后用户分不清是成功了还是被删了（P1-9）。
+      setBatchNotice('已批准生效，并移出待确认')
     } catch (caught) {
       setError((caught as Error)?.message || '确认失败')
     } finally {
@@ -2036,6 +2067,7 @@ function MemoryExplorerPage() {
       setItems((previous: MemoryItem[]) =>
         previous.map(item => item.id === id ? body.item : item))
       setDetailId(null)
+      setBatchNotice(decision === 'adopt' ? '已记录人类裁决：采纳' : '已记录人类裁决：驳回')
     } catch (caught) {
       setError((caught as Error)?.message || '人类裁决失败')
     } finally {
@@ -2797,34 +2829,6 @@ function MemoryExplorerPage() {
                     }, formatProbeEvidence(item.probeContext)),
                   ])
                   : h('div', { key: 'no-evidence', style: { fontSize: '12px', opacity: 0.55 } }, '这条探针没有证据包（旧版本产生的）'),
-                ...(threadOf(item).length === 0
-                  ? []
-                  : [h('div', {
-                    key: 'thread',
-                    style: {
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '4px',
-                      // 长回答要能自己滚动读完，而不是把面板撑爆或溢出被裁掉。
-                      maxHeight: '260px',
-                      overflowY: 'auto',
-                      overflowX: 'hidden',
-                      paddingRight: '4px',
-                    },
-                  },
-                    threadOf(item).map((turn, index) => h('div', {
-                      key: `turn-${index}`,
-                      style: {
-                        fontSize: '12px',
-                        padding: '6px 8px',
-                        borderRadius: '6px',
-                        lineHeight: 1.6,
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                        overflowWrap: 'anywhere',
-                        background: turn.role === 'user' ? 'rgba(74,127,193,0.12)' : 'rgba(0,0,0,0.045)',
-                      },
-                    }, `${turn.role === 'user' ? '我' : '大肥鱼'}：${turn.text}`)))]),
                 h('textarea', {
                   key: 'answer',
                   style: memoryStyles.resolutionInput,
@@ -2859,6 +2863,63 @@ function MemoryExplorerPage() {
                     onClick: () => { void probeIgnore(item) },
                   }, '跳过'),
                 ]),
+                // 追问入口：有疑问可以继续问，而不是只能「答」或「跳过」。
+                // 占位文本留空——预设内容会暗示「只能这么问」，反而限制表达。
+                h('div', { key: 'follow-label', style: { fontSize: '11px', opacity: 0.6, marginTop: '2px' } }, '继续追问（自由输入）'),
+                h('textarea', {
+                  key: 'follow',
+                  style: memoryStyles.resolutionInput,
+                  rows: 2,
+                  value: followDrafts[item.id] ?? '',
+                  placeholder: '',
+                  onChange: (event: { target: { value: string } }) => {
+                    const value = event.target.value
+                    setFollowDrafts((previous: Record<string, string>) => ({ ...previous, [item.id]: value }))
+                  },
+                }),
+                h('div', { key: 'follow-buttons', style: memoryStyles.actions }, [
+                  h('button', {
+                    key: 'follow',
+                    type: 'button',
+                    style: memoryStyles.save,
+                    disabled: probeDeciding !== null,
+                    onClick: () => { void probeFollow(item) },
+                  }, probeDeciding === `${item.id}:follow` ? '追问中…' : '追问'),
+                ]),
+              ])
+              : null,
+            // 追问与多轮线程对「已回答/已跳过」同样可见：
+            // 否则答完一个问题，追问入口和历史会整块消失（P1-8）。
+            item.type === 'cognitive_probe'
+              ? h('div', { key: 'probe-thread', style: { display: 'flex', flexDirection: 'column', gap: '6px', width: '100%' } }, [
+                ...(threadOf(item).length === 0
+                  ? []
+                  : [h('div', {
+                    key: 'thread',
+                    style: {
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px',
+                      // 长回答要能自己滚动读完，而不是把面板撑爆或溢出被裁掉。
+                      maxHeight: '260px',
+                      overflowY: 'auto',
+                      overflowX: 'hidden',
+                      paddingRight: '4px',
+                    },
+                  },
+                    threadOf(item).map((turn, index) => h('div', {
+                      key: `turn-${index}`,
+                      style: {
+                        fontSize: '12px',
+                        padding: '6px 8px',
+                        borderRadius: '6px',
+                        lineHeight: 1.6,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        overflowWrap: 'anywhere',
+                        background: turn.role === 'user' ? 'rgba(74,127,193,0.12)' : 'rgba(0,0,0,0.045)',
+                      },
+                    }, `${turn.role === 'user' ? '我' : '大肥鱼'}：${turn.text}`)))]),
                 // 追问入口：有疑问可以继续问，而不是只能「答」或「跳过」。
                 // 占位文本留空——预设内容会暗示「只能这么问」，反而限制表达。
                 h('div', { key: 'follow-label', style: { fontSize: '11px', opacity: 0.6, marginTop: '2px' } }, '继续追问（自由输入）'),
@@ -2999,8 +3060,11 @@ function MemoryExplorerPage() {
                 type: 'button',
                 style: memoryStyles.delete,
                 disabled: deleting === item.id,
-                onClick: () => { void remove(item) },
-              }, deleting === item.id ? '丢弃中…' : '丢弃')
+                onClick: () => {
+                  if (confirmingId === item.id) void remove(item)
+                  else armConfirm(item.id)
+                },
+              }, deleting === item.id ? '丢弃中…' : confirmingId === item.id ? '确认丢弃？' : '丢弃')
               : null,
             (item.status === 'approved' || item.status === 'rejected')
               ? h('button', {
@@ -3008,8 +3072,11 @@ function MemoryExplorerPage() {
                 type: 'button',
                 style: memoryStyles.delete,
                 disabled: deleting === item.id,
-                onClick: () => { void remove(item) },
-              }, deleting === item.id ? '删除中…' : '删除')
+                onClick: () => {
+                  if (confirmingId === item.id) void remove(item)
+                  else armConfirm(item.id)
+                },
+              }, deleting === item.id ? '删除中…' : confirmingId === item.id ? '确认删除？' : '删除')
               : null,
           ]),
         ])

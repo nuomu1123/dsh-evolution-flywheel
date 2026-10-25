@@ -58,25 +58,45 @@ function signatureMatches(skill: MemoryRecord, text: string): boolean {
   return tokens.some(token => haystack.includes(token))
 }
 
-/** 已确认记忆摘要：提炼法则/方法论 + preference/fact + 排错经验，按遗忘曲线褪色。 */
+/** 机器探测类「事实/偏好」不进入注入：浏览器审计记录、整段用户原始需求都不是可复用经验。 */
+function isNoiseBasic(item: MemoryRecord): boolean {
+  const content = item.content ?? ''
+  if (content.includes('[浏览器审计]')) return true
+  if (item.type !== 'preference') return false
+  // 用户整段原始需求（长且带任务词）当偏好长期注入，会把排错经验挤出预算。
+  if (content.length > 200 && /(请|任务|步骤|实现|修复|写入|不要)/u.test(content)) return true
+  return false
+}
+
+/**
+ * 已确认记忆摘要。
+ *
+ * 顺序按「可复用性」排：跨域法则 → 提炼策略 → **排错经验** → 偏好/事实 → 思维模型。
+ * 2026-10-25 实测修正：旧顺序把偏好/事实放前面，76 条带解法的排错经验被 2000 字预算饿死（注入里 0 条）。
+ */
 export function buildDigest(items: readonly MemoryRecord[]): string {
   const now = Date.now()
   // 已褪色或已归档的记忆不再进入系统提示：留在库里，但不再污染当前世界模型。
   const active = items.filter(item => item.archived !== true && !isFaded(item, now))
   const approved = active.filter(item => item.status === 'approved')
-  const rules = approvedRules(active)
+  const rules = approvedRules(active).slice(0, 3)
   const strategies = rankStrategies(active, 3)
-  const basics = approved
-    .filter(item => item.type === 'preference' || item.type === 'fact')
-    .slice(0, 12)
-  const models = approved
-    .filter(item => item.type === 'mental_model')
-    .slice(0, 2)
+  // 排错经验优先：已解决问题可直接复用，最该先占预算。
   const skills = approved
     .filter(item => item.type === 'skill_error_fix'
       && typeof item.resolution === 'string'
       && item.resolution.trim() !== '')
+    .sort((left, right) => memorySalience(right) - memorySalience(left))
+    .slice(0, 4)
+  // 偏好/事实：过滤探测噪音、按显著性排序、限条（避免闲聊把预算吃满）。
+  const basics = approved
+    .filter(item => item.type === 'preference' || item.type === 'fact')
+    .filter(item => !isNoiseBasic(item))
+    .sort((left, right) => memorySalience(right) - memorySalience(left))
     .slice(0, 5)
+  const models = approved
+    .filter(item => item.type === 'mental_model')
+    .slice(0, 2)
   if (basics.length === 0 && models.length === 0 && skills.length === 0
     && rules.length === 0 && strategies.length === 0) return ''
   const lines = ['[dsh-evolution-flywheel] 已确认的长期记忆（自动注入，供参考）：']
@@ -92,24 +112,33 @@ export function buildDigest(items: readonly MemoryRecord[]): string {
     lines.push('【提炼方法论（最近最成功，供当前任务参考）】')
     for (const item of strategies) {
       const status = item.status === 'approved' ? '已裁决' : '候选'
-      const model = item.thinkingModel === undefined ? '' : `｜思维模型：${item.thinkingModel}`
+      const model = item.thinkingModel === undefined ? '' : `｜思维模型：${item.thinkingModel.slice(0, 60)}`
       const applies = item.effectiveFor === undefined ? '' : `｜适用：${item.effectiveFor.slice(0, 50)}`
       lines.push(`- [${status}] ${item.content.slice(0, 60)}${model}${applies}（${perceptionLabel(item, now)}）`)
     }
   }
+  // 排错经验前置：这是「记住并复用」的主战场，不能再被偏好挤掉。
+  if (skills.length > 0) {
+    lines.push('【排错经验（已解决，可直接复用）】')
+    for (const item of skills) {
+      const salience = memorySalience(item)
+      const prefix = salience >= 0.8 ? '⚠️ 致命红线 · ' : salience >= 0.55 ? '高显著 · ' : ''
+      lines.push(
+        `- ${prefix}${(item.errorSignature ?? item.content).slice(0, 60)} → ${(item.resolution ?? '').slice(0, 90)}（${perceptionLabel(item, now)}）`,
+      )
+    }
+  }
   for (const item of basics) {
-    lines.push(`- ${item.type === 'preference' ? '偏好' : '事实'}：${item.content.slice(0, 160)}（${perceptionLabel(item, now)}）`)
+    const label = item.type === 'preference' ? '偏好' : '事实'
+    // 偏好多为用户原话，可复用性低，截短；事实保留更多上下文。
+    const limit = item.type === 'preference' ? 70 : 120
+    lines.push(`- ${label}：${(item.content ?? '').slice(0, limit)}（${perceptionLabel(item, now)}）`)
   }
   for (const item of models) {
     const pattern = (item.metaInsight ?? '').slice(0, 80)
     const applies = (item.resolution ?? '').slice(0, 80)
     const counter = (item.counterexample ?? '').slice(0, 60)
     lines.push(`- 思维模型：${item.content.slice(0, 40)} → ${pattern}；适用：${applies}${counter === '' ? '' : `；反例：${counter}`}（${perceptionLabel(item, now)}）`)
-  }
-  for (const item of skills) {
-    const salience = memorySalience(item)
-    const prefix = salience >= 0.8 ? '⚠️ 致命红线 · ' : salience >= 0.55 ? '高显著 · ' : ''
-    lines.push(`- 排错经验：${prefix}${(item.errorSignature ?? item.content).slice(0, 80)} → ${(item.resolution ?? '').slice(0, 120)}（${perceptionLabel(item, now)}）`)
   }
   lines.push('【时间感】记忆会随时间褪色；保留率低或标有“建议重新验证”时，先跑最小验证，再用 memory_probe 记录结论，不要直接沿用旧经验。')
   const digest = lines.join('\n')

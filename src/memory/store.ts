@@ -17,6 +17,48 @@ const sanitize = (value: unknown, maxLength = 1000): string =>
 const sanitizeQuiet = (value: unknown, maxLength = 1000): string =>
   sanitizeText(value, maxLength, '记忆读取', false)
 
+/**
+ * 结构化 JSON 字段不能用文本截断：`slice(...,N)` 会把 JSON 切成非法串，
+ * 下游 `JSON.parse` 一失败，整段数据就静默消失（整理报告 reportJson、追问历史 probeThread 都踩过）。
+ * 这里先解析、再按结构裁剪，保证落库的仍是合法 JSON；坏 JSON 明确标记而不是原样保留。
+ */
+export function clampJsonField(value: string, maxLength: number, keep: 'head' | 'tail' = 'head'): string {
+  const text = value.trim()
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return JSON.stringify({ truncated: true, reason: 'invalid-json', length: text.length })
+  }
+  const full = JSON.stringify(parsed)
+  if (full.length <= maxLength) return full
+  // 数组：对话/列表类保留更新的一段（keep=tail 时丢最早的）。
+  if (Array.isArray(parsed)) {
+    let kept = parsed
+    while (kept.length > 0 && JSON.stringify(kept).length > maxLength) {
+      kept = keep === 'tail' ? kept.slice(1) : kept.slice(0, -1)
+    }
+    return JSON.stringify(kept)
+  }
+  // 对象：从最大的字段开始砍半，直到放得下。
+  if (typeof parsed === 'object' && parsed !== null) {
+    const record: Record<string, unknown> = { ...(parsed as Record<string, unknown>) }
+    const keys = Object.keys(record).sort(
+      (left, right) =>
+        JSON.stringify(record[right] ?? null).length - JSON.stringify(record[left] ?? null).length,
+    )
+    for (const key of keys) {
+      if (JSON.stringify(record).length <= maxLength) break
+      const item = record[key]
+      if (Array.isArray(item)) record[key] = item.slice(0, Math.max(1, Math.floor(item.length / 2)))
+      else if (typeof item === 'string') record[key] = item.slice(0, Math.max(120, Math.floor(item.length / 2)))
+    }
+    if (JSON.stringify(record).length <= maxLength) return JSON.stringify(record)
+    return JSON.stringify({ truncated: true, reason: 'too-large', length: text.length })
+  }
+  return JSON.stringify({ truncated: true, reason: 'too-large', length: text.length })
+}
+
 export type MemoryType = 'fact' | 'preference' | 'skill_error_fix' | 'conflict' | 'speculative' | 'meta_insight' | 'mental_model' | 'extraction_strategy' | 'curation_report' | 'cognitive_probe' | 'cognitive_brief'
 export type MemoryStatus =
   | 'suggested'
@@ -340,7 +382,8 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
       ? { humanInterventions: Math.max(0, Math.trunc(value.humanInterventions)) }
       : {}),
     ...(value.archived === true ? { archived: true } : {}),
-    ...(typeof value.reportJson === 'string' ? { reportJson: sanitizeQuiet(value.reportJson, 16000) } : {}),
+    // 读路径只消毒、不按小上限截断：读一次就砍断的 JSON，写回后会永久损坏（P2-7）。
+    ...(typeof value.reportJson === 'string' ? { reportJson: sanitizeQuiet(value.reportJson, 64000) } : {}),
     ...(typeof value.probeReason === 'string' ? { probeReason: sanitizeQuiet(value.probeReason, 500) } : {}),
     ...(value.probeState === 'open' || value.probeState === 'answered'
       || value.probeState === 'searching' || value.probeState === 'ignored'
@@ -350,7 +393,7 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
     ...(typeof value.answeredAt === 'string' ? { answeredAt: value.answeredAt } : {}),
     ...(typeof value.probeSource === 'string' ? { probeSource: sanitizeQuiet(value.probeSource, 120) } : {}),
     ...(typeof value.probeContext === 'string' ? { probeContext: sanitizeQuiet(value.probeContext, 4000) } : {}),
-    ...(typeof value.probeThread === 'string' ? { probeThread: sanitizeQuiet(value.probeThread, 8000) } : {}),
+    ...(typeof value.probeThread === 'string' ? { probeThread: sanitizeQuiet(value.probeThread, 32000) } : {}),
     ...(typeof value.thinkingModel === 'string' ? { thinkingModel: sanitizeQuiet(value.thinkingModel, 120) } : {}),
     ...(typeof value.analogyReason === 'string' ? { analogyReason: sanitizeQuiet(value.analogyReason, 500) } : {}),
     ...(typeof value.effectiveFor === 'string' ? { effectiveFor: sanitizeQuiet(value.effectiveFor, 300) } : {}),
@@ -697,14 +740,14 @@ export class MemoryStore {
           ? { humanInterventions: Math.max(0, Math.trunc(patch.humanInterventions)) }
           : {}),
         ...(patch.archived !== undefined ? { archived: patch.archived } : {}),
-        ...(patch.reportJson !== undefined ? { reportJson: sanitize(patch.reportJson, 16000) } : {}),
+        ...(patch.reportJson !== undefined ? { reportJson: clampJsonField(patch.reportJson, 16000) } : {}),
         ...(patch.probeReason !== undefined ? { probeReason: sanitize(patch.probeReason, 500) } : {}),
         ...(patch.probeState !== undefined ? { probeState: patch.probeState } : {}),
         ...(patch.answer !== undefined ? { answer: sanitize(patch.answer, 2000) } : {}),
         ...(patch.answeredAt !== undefined ? { answeredAt: patch.answeredAt } : {}),
         ...(patch.probeSource !== undefined ? { probeSource: sanitize(patch.probeSource, 120) } : {}),
         ...(patch.probeContext !== undefined ? { probeContext: sanitize(patch.probeContext, 4000) } : {}),
-        ...(patch.probeThread !== undefined ? { probeThread: sanitize(patch.probeThread, 8000) } : {}),
+        ...(patch.probeThread !== undefined ? { probeThread: clampJsonField(patch.probeThread, 8000, 'tail') } : {}),
       }
       const next = [...items]
       next[index] = updated
