@@ -10,11 +10,40 @@
  */
 import type { MemoryContextBase } from './context.js'
 import { readBudget } from './budget.js'
+import { isFaded, memoryFreshness } from './decay.js'
 import { complete } from './review-driver.js'
 import { sanitizeText } from './sanitize.js'
 import { createProbe } from './probes.js'
 import type { StrategyHooks } from './strategy.js'
 import type { MemoryRecord, MemoryStore } from './store.js'
+
+/**
+ * 选出本次大提炼的输入（遗忘与提炼互补的「遗忘→提炼」方向）。
+ *
+ * 旧逻辑只取最近的 meta_insight，导致「快被忘掉的洞察」永远轮不到压缩，
+ * 一褪色就直接从注入里消失、细节再也抽不出来。
+ * 现在的顺序：**将褪色且尚未被覆盖的洞察优先**，再用最近的补满。
+ */
+export function pickDistillSeeds(items: readonly MemoryRecord[], limit = 8, now = Date.now()): MemoryRecord[] {
+  const insights = items.filter(item => item.type === 'meta_insight'
+    && item.archived !== true
+    && (item.status === 'approved' || item.status === 'speculative'))
+  // 只有已生效的规律才算「已被覆盖」：候选规律不能阻止原始洞察被再次提炼。
+  const compressed = new Set<string>()
+  for (const item of items) {
+    if (item.status !== 'approved' || item.compressedFrom === undefined) continue
+    for (const id of item.compressedFrom) compressed.add(id)
+  }
+  const stale = insights
+    .filter(item => !compressed.has(item.id) && isFaded(item, now))
+    .sort((left, right) => memoryFreshness(left, now) - memoryFreshness(right, now))
+    .slice(0, Math.max(0, Math.min(4, limit)))
+  const staleIds = new Set(stale.map(item => item.id))
+  const rest = insights
+    .filter(item => !staleIds.has(item.id))
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+  return [...stale, ...rest].slice(0, Math.max(0, limit))
+}
 
 export interface DistilledModel {
   name: string
@@ -63,10 +92,8 @@ export async function distillModel(
   hooks?: StrategyHooks,
 ): Promise<DistillOutcome | undefined> {
   const items = await store.list()
-  const seeds = items
-    .filter(item => item.type === 'meta_insight'
-      && (item.status === 'approved' || item.status === 'speculative'))
-    .slice(0, 8)
+  // 遗忘信号优先：将褪色且尚未被覆盖的洞察先压缩，避免「褪色即失去细节」。
+  const seeds = pickDistillSeeds(items, 8)
   if (seeds.length < 2) return undefined
 
   let strategyText = ''

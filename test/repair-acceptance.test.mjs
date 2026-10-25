@@ -16,6 +16,7 @@ import { appendAudit, readAudit } from '../lib/audit.js'
 import { buildDigest } from '../lib/memory/recall.js'
 import { sanitizeText } from '../lib/memory/sanitize.js'
 import { buildSkillCandidate } from '../lib/memory/skill-extractor.js'
+import { pickDistillSeeds } from '../lib/memory/model-distill.js'
 import { tabCounts } from '../src/client/logic.ts'
 import { memoryRememberTool } from '../lib/memory/tools.js'
 import { MemoryStore } from '../lib/memory/store.js'
@@ -364,4 +365,47 @@ test('整理报告区分「已被提炼覆盖」与「建议先提炼」', async
   assert.match(reasons, /已被提炼规律覆盖/u)
   assert.match(reasons, /建议先大提炼/u)
   assert.match(report.risks.join(' '), /未被提炼覆盖/u)
+})
+
+test('褪色优先提炼：将褪色的洞察排在新鲜洞察之前', () => {
+  const now = Date.now()
+  const stale = {
+    id: 'mem-stale', content: '将褪色的洞察', type: 'meta_insight', status: 'approved',
+    createdAt: new Date(now - 120 * 86_400_000).toISOString(),
+  }
+  const fresh = {
+    id: 'mem-fresh', content: '新鲜洞察', type: 'meta_insight', status: 'approved',
+    createdAt: new Date(now).toISOString(),
+  }
+  const seeds = pickDistillSeeds([fresh, stale], 8)
+  assert.equal(seeds[0].id, 'mem-stale', '快被忘掉的洞察必须优先被压缩')
+})
+
+test('褪色优先提炼：已被已生效规律覆盖的不再优先', () => {
+  const now = Date.now()
+  const stale = {
+    id: 'mem-stale2', content: '将褪色的洞察', type: 'meta_insight', status: 'approved',
+    createdAt: new Date(now - 120 * 86_400_000).toISOString(),
+  }
+  const fresh = {
+    id: 'mem-fresh2', content: '新鲜洞察', type: 'meta_insight', status: 'approved',
+    createdAt: new Date(now).toISOString(),
+  }
+  const model = {
+    id: 'mem-model-x', content: '规律', type: 'mental_model', status: 'approved',
+    createdAt: new Date(now).toISOString(), compressedFrom: ['mem-stale2'],
+  }
+  const seeds = pickDistillSeeds([stale, fresh, model], 8)
+  assert.equal(seeds[0].id, 'mem-fresh2', '已覆盖的洞察不该再抢提炼名额')
+})
+
+test('褪色优先提炼：结果不超过上限', () => {
+  const items = Array.from({ length: 12 }, (_, index) => ({
+    id: `mem-${index}`,
+    content: '洞察',
+    type: 'meta_insight',
+    status: 'approved',
+    createdAt: new Date(Date.now() - index * 86_400_000).toISOString(),
+  }))
+  assert.equal(pickDistillSeeds(items, 8).length, 8)
 })
