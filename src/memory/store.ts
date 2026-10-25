@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFile, link, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { clampMetaInsight, sanitizeText } from './sanitize.js'
+import { clampMetaInsight, sanitizeText, scrubControlChars } from './sanitize.js'
 
 const sanitize = (value: unknown, maxLength = 1000): string =>
   sanitizeText(value, maxLength, '记忆写入')
@@ -332,9 +332,11 @@ function normalizeDebateRounds(value: unknown): DebateRound[] {
 function normalizeRecord(value: MemoryRecord): MemoryRecord {
   return {
     id: value.id,
-    content: value.content,
+    // 读路径只去掉控制/零宽字符，不做注入文案替换（否则会误伤技术文本）。
+    content: scrubControlChars(value.content),
     type: value.type,
-    status: MEMORY_STATUSES.includes(value.status) ? value.status : 'approved',
+    // fail-safe：缺 status/非法 status 不能默认 approved（否则残缺数据会直接进注入池）。
+    status: MEMORY_STATUSES.includes(value.status) ? value.status : 'suggested',
     createdAt: value.createdAt,
     ...(typeof value.errorSignature === 'string' ? { errorSignature: value.errorSignature } : {}),
     ...(typeof value.context === 'string' ? { context: value.context } : {}),
@@ -458,7 +460,9 @@ function searchScore(item: MemoryRecord, text: string): number {
   if (context.includes(text)) score += 8
   if (resolution.includes(text)) score += 5
   // 漫游猜想（speculative）常含大量技术词，但未经验证：默认降权，仍可检索到但排在后面。
-  if (item.status === 'speculative') score -= 15
+  // 降权只影响排序，不能把「只命中签名」的记录抹成未命中（score 15 - 15 = 0）；
+  // 原始 score 为 0（完全没命中）时仍保持未命中。
+  if (item.status === 'speculative' && score > 0) score = Math.max(1, score - 15)
   if (score <= 0) return 0
   const ageDays = (Date.now() - Date.parse(item.createdAt)) / 86_400_000
   if (Number.isFinite(ageDays)) score += Math.max(0, 3 - ageDays / 10)

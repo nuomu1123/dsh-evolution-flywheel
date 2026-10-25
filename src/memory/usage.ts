@@ -50,8 +50,9 @@ export function summarizeUsage(items: readonly MemoryRecord[], now = new Date())
   let debateTodayTokens = 0
   let debateTotalTokens = 0
   for (const item of items) {
-    const review = typeof item.reviewTokens === 'number' ? item.reviewTokens : 0
-    const debate = typeof item.debateTokens === 'number' ? item.debateTokens : 0
+    // 负数 token 会反向注水预算（实测 reviewTokens=-2,000,000 让 exceeded 永远 false），必须钳到 0。
+    const review = typeof item.reviewTokens === 'number' && item.reviewTokens > 0 ? item.reviewTokens : 0
+    const debate = typeof item.debateTokens === 'number' && item.debateTokens > 0 ? item.debateTokens : 0
     reviewTotalTokens += review
     debateTotalTokens += debate
     if (new Date(item.createdAt).toDateString() === today) {

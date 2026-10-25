@@ -57,7 +57,9 @@ function rotateIfNeeded(file: string): void {
  * @param payload 可序列化的事件负载；不要放正文或密钥。
  */
 export function appendAudit(event: string, payload: Record<string, unknown>): void {
-  if (process.env.DSH_MEMORY_AUDIT === 'off') return
+  // 开关大小写不敏感：OFF / Off / 0 / false 都应生效（此前只认小写 off）。
+  const switchValue = (process.env.DSH_MEMORY_AUDIT ?? '').trim().toLowerCase()
+  if (switchValue === 'off' || switchValue === '0' || switchValue === 'false') return
   try {
     const file = auditFile()
     mkdirSync(dirname(file), { recursive: true })

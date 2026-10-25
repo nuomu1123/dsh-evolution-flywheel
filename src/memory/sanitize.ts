@@ -85,6 +85,16 @@ function recordIntercept(source: string, original: string, patterns: readonly st
 }
 
 /**
+ * 读路径净化：只去控制字符与零宽字符，**不做注入文案替换**。
+ *
+ * 读时做完整消毒会误伤技术文本（例如「PowerShell …」整段被替换成占位符，见 P1-13），
+ * 所以读只处理不可见字符；真正的注入防护留在写入与外部内容入口。
+ */
+export function scrubControlChars(value: string): string {
+  return value.replace(CONTROL_CHARS, '').replace(ZERO_WIDTH, '')
+}
+
+/**
  * 过滤控制字符、零宽字符和常见提示词注入指令。
  * @param value 原始文本。
  * @param maxLength 最大保留长度。

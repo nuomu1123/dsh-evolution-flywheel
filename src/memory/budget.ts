@@ -17,8 +17,15 @@ export interface BudgetSnapshot {
 }
 
 export function dailyBudget(): number {
-  const raw = Number(process.env.DSH_MEMORY_DAILY_TOKEN_BUDGET)
-  return Number.isFinite(raw) && raw >= 0 ? Math.trunc(raw) : 0
+  const raw = process.env.DSH_MEMORY_DAILY_TOKEN_BUDGET
+  if (raw === undefined || raw.trim() === '') return 0
+  const parsed = Number(raw)
+  // 非法值不能静默变成「不限」：至少留下一条可查的警告。
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    console.warn(`[dsh-evolution-flywheel] DSH_MEMORY_DAILY_TOKEN_BUDGET=${raw} 非法，按 0（不限）处理`)
+    return 0
+  }
+  return Math.trunc(parsed)
 }
 
 export async function readBudget(store: MemoryStore): Promise<BudgetSnapshot> {

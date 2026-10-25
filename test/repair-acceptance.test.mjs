@@ -12,8 +12,10 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { appendAudit, readAudit } from '../lib/audit.js'
 import { buildDigest } from '../lib/memory/recall.js'
 import { MemoryStore } from '../lib/memory/store.js'
+import { summarizeUsage } from '../lib/memory/usage.js'
 
 const iso = () => new Date().toISOString()
 const record = over => ({
@@ -130,4 +132,61 @@ test('删除/丢弃是两步确认：先上膛再执行', async () => {
   assert.match(client, /const \[confirmingId, setConfirmingId\]/, '必须有待确认状态')
   assert.match(client, /armConfirm/, '必须先上膛再删除')
   assert.match(client, /确认删除？/, '按钮文案必须变成确认文案')
+})
+
+test('fail-open 修复：缺 status 的记录不会被当成 approved', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-failopen-'))
+  try {
+    const file = join(dir, 'memories.jsonl')
+    await writeFile(file, `${JSON.stringify({ id: 'mem-nostatus', content: '无状态记录', type: 'fact', createdAt: iso() })}\n`, 'utf8')
+    const store = new MemoryStore(dir)
+    const items = await store.list()
+    assert.equal(items.length, 1)
+    assert.equal(items[0].status, 'suggested', '残缺数据必须落到 suggested，不能自动生效进注入池')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('检索修复：speculative 只命中签名时仍可搜到（降权不等于未命中）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-spec-search-'))
+  try {
+    const file = join(dir, 'memories.jsonl')
+    const item = {
+      id: 'mem-spec-sig',
+      content: '与签名无关的正文',
+      type: 'meta_insight',
+      status: 'speculative',
+      createdAt: iso(),
+      errorSignature: 'UNIQUE_SPEC_SIG_TOKEN',
+    }
+    await writeFile(file, `${JSON.stringify(item)}\n`, 'utf8')
+    const store = new MemoryStore(dir)
+    const hits = await store.search('UNIQUE_SPEC_SIG_TOKEN', 5)
+    assert.equal(hits.length, 1, '仅命中签名也应算命中（降权只影响排序）')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('预算修复：负 token 不会把今日用量反向注水', () => {
+  const usage = summarizeUsage([
+    {
+      id: 'mem-neg', content: '', type: 'fact', status: 'approved', createdAt: iso(),
+      reviewTokens: -2_000_000, debateTokens: -1_000_000,
+    },
+  ])
+  assert.ok(usage.todayTokens >= 0, `todayTokens 不能为负，实际 ${usage.todayTokens}`)
+})
+
+test('审计开关大小写不敏感：OFF 也关得掉', () => {
+  process.env.DSH_MEMORY_AUDIT = 'OFF'
+  try {
+    const before = readAudit(200).filter(entry => entry.event === 'test.audit.off').length
+    appendAudit('test.audit.off', { probe: true })
+    const after = readAudit(200).filter(entry => entry.event === 'test.audit.off').length
+    assert.equal(after, before, '大写 OFF 必须同样关闭审计写入')
+  } finally {
+    delete process.env.DSH_MEMORY_AUDIT
+  }
 })

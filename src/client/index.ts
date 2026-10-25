@@ -391,7 +391,8 @@ const memoryStyles = {
     gap: '12px',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    overflow: 'auto',
+    // 卡片不再各自滚动：185 个独立滚动容器既拖慢渲染，也会劫持触控板滚动（P2-14）。
+    overflow: 'visible',
     // list 是固定高度的 flex 列容器：卡片必须拒绝收缩，否则五步推导会被压扁成一行半。
     flexShrink: 0,
     minWidth: '240px',
@@ -2526,7 +2527,9 @@ function MemoryExplorerPage() {
             animationName: 'dshMemoryBreathe',
             animationDuration: '2.4s',
             animationTimingFunction: 'ease-in-out',
-            animationIterationCount: 'infinite',
+            // 只在「刚变成待裁决」时播两次：34 张卡同时无限呼吸会让整屏持续重绘，
+            // 反而把真正的错误框/断连条淹没（P2-7）。
+            animationIterationCount: 2,
           }
           : item.type === 'extraction_strategy'
             ? {
@@ -2854,13 +2857,9 @@ function MemoryExplorerPage() {
               item.discipline !== undefined
                 ? h('span', { key: 'discipline', style: memoryStyles.badgeSpeculative }, item.discipline)
                 : null,
-              memorySalience(item) >= 0.8
-                ? h('span', { key: 'salience', style: memoryStyles.badgeSpeculative }, '⚠️ 致命红线')
-                : memorySalience(item) >= 0.55
-                  ? h('span', { key: 'salience', style: memoryStyles.badge }, '高显著')
-                  : null,
+              // 「⚠️ 致命红线 / 高显著」已经由 perceptionLabel 打在 provenance 行上，
+              // 这里不再重复渲染；时间同理只保留 provenance 一处（P2-3）。
               busy ? h('span', { key: 'loader', style: memoryStyles.loader }, '思考中…') : null,
-              h('span', { key: 'time' }, formatMemoryTime(item.createdAt)),
             ]),
           ]),
           h('div', { key: 'actions', style: memoryStyles.actions }, [
