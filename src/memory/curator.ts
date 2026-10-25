@@ -146,6 +146,15 @@ export function buildCurationReport(
   let fresh = 0
   let faded = 0
   let highSalience = 0
+  let uncoveredFaded = 0
+  // 遗忘与提炼互补：只有被「已生效规律」压缩覆盖过的记忆才可优先遗忘；
+  // 还没被覆盖就归档，等于把尚未抽取成规律的细节直接丢掉。
+  const compressedBy = new Set<string>()
+  for (const item of active) {
+    if (item.status !== 'approved') continue
+    if (item.compressedFrom === undefined) continue
+    for (const id of item.compressedFrom) compressedBy.add(id)
+  }
 
   for (const item of active) {
     const key = item.content.trim()
@@ -159,8 +168,10 @@ export function buildCurationReport(
     const salience = memorySalience(item)
     const isOld = isFaded(item, now)
     const retention = Math.round(memoryFreshness(item, now) * 100)
-    if (isOld) faded += 1
-    else fresh += 1
+    if (isOld) {
+      faded += 1
+      if (!compressedBy.has(item.id)) uncoveredFaded += 1
+    } else fresh += 1
     if (salience >= 0.8) highSalience += 1
 
     // 分类互斥：高价值 > 归档候选 > 保留。
@@ -173,10 +184,13 @@ export function buildCurationReport(
       continue
     }
     if (isOld || (item.status === 'rejected' && memoryAgeDays(item, now) >= REJECTED_ARCHIVE_AFTER_DAYS)) {
+      const covered = compressedBy.has(item.id)
       archive.push({
         id: item.id,
         content: excerpt(item),
-        reason: isOld ? `保留率 ${retention}%，已褪色` : '已驳回且超过 30 天',
+        reason: isOld
+          ? `保留率 ${retention}%，已褪色${covered ? '（已被提炼规律覆盖，可安全归档）' : '（尚未被提炼覆盖，建议先大提炼）'}`
+          : '已驳回且超过 30 天',
       })
       continue
     }
@@ -207,6 +221,10 @@ export function buildCurationReport(
   const needsHumanCount = humanItems.length - modelFailureCount
   const risks: string[] = []
   if (faded > 0) risks.push(`${faded} 条记忆已褪色，建议确认后归档`)
+  // 遗忘与提炼互补：提醒「先压缩再遗忘」，否则归档等于丢弃尚未抽取的细节。
+  if (uncoveredFaded > 0) {
+    risks.push(`${uncoveredFaded} 条已褪色但未被提炼覆盖：建议先跑大提炼压成规律，再归档`)
+  }
   if (undecided > 0) risks.push(`${undecided} 条记忆尚未裁决（待确认 ${suggestedCount} 条 / 待审阅 ${reviewCount} 条），长期停留会稀释注意力`)
   if (humanItems.length > 0) risks.push(`${humanItems.length} 条等待人类圣裁：其中 ${modelFailureCount} 条是模型故障遗留（可批量重试），${needsHumanCount} 条需要你亲自判断`)
   if (active.length > 800) risks.push('记忆条数接近 1 MiB 文件上限，建议归档或导出')

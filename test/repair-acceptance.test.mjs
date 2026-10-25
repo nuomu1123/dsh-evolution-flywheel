@@ -315,3 +315,53 @@ test('.corrupt 保留完整坏行（不再只存前 500 字）', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('遗忘与提炼互补：被已生效规律覆盖的原始记忆不再单独注入', () => {
+  const model = record({
+    id: 'mem-model', type: 'mental_model', status: 'approved', content: '模型：先抽象后映射',
+    compressedFrom: ['mem-skill'],
+  })
+  const skill = record({
+    id: 'mem-skill', type: 'skill_error_fix', content: '错误：X',
+    errorSignature: 'ToolError: EPERM', resolution: '临时名加随机后缀',
+  })
+  const digest = buildDigest([model, skill])
+  assert.equal(digest.includes('临时名加随机后缀'), false, '被覆盖的原始细节不应再占用注入预算')
+})
+
+test('遗忘与提炼互补：候选规律（未裁决）不能替原始记忆退场', () => {
+  const model = record({
+    id: 'mem-model2', type: 'mental_model', status: 'suggested', content: '候选模型',
+    compressedFrom: ['mem-skill2'],
+  })
+  const skill = record({
+    id: 'mem-skill2', type: 'skill_error_fix', content: '错误：Y',
+    errorSignature: 'ToolError: EIO', resolution: '改用 PowerShell 直接写',
+  })
+  const digest = buildDigest([model, skill])
+  assert.match(digest, /改用 PowerShell 直接写/u, '规律没被人类裁决前，原始记忆必须继续注入')
+})
+
+test('整理报告区分「已被提炼覆盖」与「建议先提炼」', async () => {
+  const { buildCurationReport } = await import('../lib/memory/curator.js')
+  const old = over => ({
+    id: 'mem-old',
+    content: '旧记录',
+    type: 'fact',
+    status: 'approved',
+    createdAt: new Date(Date.now() - 400 * 86_400_000).toISOString(),
+    ...over,
+  })
+  const covered = old({ id: 'mem-covered', content: '被覆盖的旧记录' })
+  const uncovered = old({ id: 'mem-uncovered', content: '未被覆盖的旧记录' })
+  const model = record({
+    id: 'mem-model3', type: 'mental_model', status: 'approved', content: '规律',
+    compressedFrom: ['mem-covered'],
+  })
+  const report = buildCurationReport([covered, uncovered, model], Date.now(), 'manual')
+  const archive = report.archive ?? []
+  const reasons = archive.map(entry => entry.reason).join(' | ')
+  assert.match(reasons, /已被提炼规律覆盖/u)
+  assert.match(reasons, /建议先大提炼/u)
+  assert.match(report.risks.join(' '), /未被提炼覆盖/u)
+})

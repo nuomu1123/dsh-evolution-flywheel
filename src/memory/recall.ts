@@ -79,17 +79,27 @@ export function buildDigest(items: readonly MemoryRecord[]): string {
   // 已褪色或已归档的记忆不再进入系统提示：留在库里，但不再污染当前世界模型。
   const active = items.filter(item => item.archived !== true && !isFaded(item, now))
   const approved = active.filter(item => item.status === 'approved')
+  // 压缩链（遗忘与提炼互为补充）：已生效的规律/模型记下它覆盖了哪些原始记忆；
+  // 被覆盖的原始细节不再单独注入——规律已保留结构，重复注入只会挤占 2000 字预算。
+  // 注意只认 approved 的「压缩者」：候选规律没被人类裁决前，原始记忆不能因此退场。
+  const compressed = new Set<string>()
+  for (const item of approved) {
+    if (item.compressedFrom === undefined) continue
+    for (const id of item.compressedFrom) compressed.add(id)
+  }
   const rules = approvedRules(active).slice(0, 3)
   const strategies = rankStrategies(active, 3)
   // 排错经验优先：已解决问题可直接复用，最该先占预算。
   const skills = approved
+    .filter(item => !compressed.has(item.id))
     .filter(item => item.type === 'skill_error_fix'
       && typeof item.resolution === 'string'
       && item.resolution.trim() !== '')
     .sort((left, right) => memorySalience(right) - memorySalience(left))
     .slice(0, 4)
-  // 偏好/事实：过滤探测噪音、按显著性排序、限条（避免闲聊把预算吃满）。
+  // 偏好/事实：过滤探测噪音、跳过已被压缩的、按显著性排序、限条（避免闲聊把预算吃满）。
   const basics = approved
+    .filter(item => !compressed.has(item.id))
     .filter(item => item.type === 'preference' || item.type === 'fact')
     .filter(item => !isNoiseBasic(item))
     .sort((left, right) => memorySalience(right) - memorySalience(left))

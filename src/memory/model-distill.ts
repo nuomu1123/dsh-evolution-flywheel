@@ -113,8 +113,12 @@ export async function distillModel(
     tokensUsed: completion.tokensUsed,
     origin: 'model-distill',
     originDetail: `基于 ${seeds.length} 条 meta_insight`,
+    // 压缩链：记录这条规律覆盖了哪些原始洞察。遗忘与提炼互补——
+    // 被覆盖的原始细节不必再单独注入，只有被覆盖过的记忆才允许优先褪色。
+    compressedFrom: seeds.map(item => item.id),
     trace: [
       `读取 ${seeds.length} 条 meta_insight`,
+      `压缩覆盖：${seeds.length} 条原始洞察（compressedFrom）`,
       `来源学科：${[...new Set(seeds.map(item => item.discipline).filter((value): value is string => value !== undefined))].join(' / ') || '未记录'}`,
       `模型：${model.name}`,
       `机制：${model.pattern}`,

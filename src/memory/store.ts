@@ -111,6 +111,13 @@ export interface MemoryRecord {
   originDetail?: string
   /** 提炼/写入过程，按步骤记录。 */
   trace?: string[]
+  /**
+   * 被本条「压缩覆盖」的原始记忆 id。
+   *
+   * 遗忘与提炼互补的载体：提炼把多条原始记忆压成一条规律，原始细节就不必再单独注入；
+   * 反过来，只有被覆盖过的记忆才可以优先遗忘（规律已保留）。
+   */
+  compressedFrom?: string[]
   /** 辩论轮次（本实现固定 1 轮）。 */
   reviewRound?: number
   /** 人类圣裁结果。 */
@@ -417,6 +424,9 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
     ...(value.rule === true ? { rule: true } : {}),
     ...(Array.isArray(value.mergedFrom)
       ? { mergedFrom: value.mergedFrom.filter((id): id is string => typeof id === 'string').slice(0, 12) }
+      : {}),
+    ...(Array.isArray(value.compressedFrom)
+      ? { compressedFrom: value.compressedFrom.filter((id): id is string => typeof id === 'string').slice(0, 100) }
       : {}),
     ...(typeof value.confidence === 'number'
       ? { confidence: Math.max(0, Math.min(1, value.confidence)) }
@@ -762,6 +772,9 @@ export class MemoryStore {
         ...(patch.rule !== undefined ? { rule: patch.rule } : {}),
         ...(Array.isArray(patch.mergedFrom)
           ? { mergedFrom: patch.mergedFrom.filter((id): id is string => typeof id === 'string').slice(0, 12) }
+          : {}),
+        ...(Array.isArray(patch.compressedFrom)
+          ? { compressedFrom: patch.compressedFrom.filter((id): id is string => typeof id === 'string').slice(0, 100) }
           : {}),
         ...(patch.confidence !== undefined
           ? { confidence: Math.max(0, Math.min(1, patch.confidence)) }
