@@ -2548,6 +2548,13 @@ function MemoryExplorerPage() {
           h('div', { key: 'actions', style: memoryStyles.actions }, [
             item.type === 'cognitive_probe' && item.probeState === 'open'
               ? h('div', { key: 'probe-actions', style: { display: 'flex', flexDirection: 'column', gap: '6px', width: '100%' } }, [
+                h('div', { key: 'probe-age', style: { fontSize: '12px', opacity: 0.7 } }, (() => {
+                  // 时效提示（2026-10-25 人类视角反馈）：探针放久了没人回答，界面必须说清楚。
+                  const created = Date.parse(item.createdAt)
+                  if (!Number.isFinite(created)) return '等待回答'
+                  const days = Math.floor((Date.now() - created) / 86_400_000)
+                  return days >= 7 ? `已放置 ${days} 天 · 建议忽略` : `已放置 ${days} 天`
+                })()),
                 item.probeContext !== undefined && item.probeContext !== ''
                   ? h('details', { key: 'evidence' }, [
                     h('summary', { key: 'summary', style: { cursor: 'pointer', fontSize: '12px', color: '#4A7FC1' } }, '展开证据包'),

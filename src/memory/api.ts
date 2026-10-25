@@ -877,10 +877,21 @@ export async function handleMemoryApi(
       const brief = items
         .filter(item => item.type === 'cognitive_brief')
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
+      // 探针时效（2026-10-25 人类视角反馈）：6 条探针全部停留 open、无人回答，
+      // 界面却看不出「它已经放了多久」。这里附带 ageDays 与 stale 标记，供 UI 提示忽略。
+      const nowMs = Date.now()
+      const STALE_AFTER_DAYS = 7
+      const probes = items
+        .filter(item => item.type === 'cognitive_probe')
+        .map(item => {
+          const created = Date.parse(item.createdAt)
+          const ageDays = Number.isFinite(created) ? Math.floor((nowMs - created) / 86_400_000) : 0
+          return { ...item, ageDays, stale: item.probeState === 'open' && ageDays >= STALE_AFTER_DAYS }
+        })
       sendJson(res, 200, {
         ok: brief !== undefined,
         brief: brief ?? null,
-        probes: items.filter(item => item.type === 'cognitive_probe'),
+        probes,
       })
       return
     }
