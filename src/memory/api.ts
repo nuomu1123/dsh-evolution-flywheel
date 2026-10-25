@@ -806,6 +806,62 @@ export async function handleMemoryApi(
       return
     }
 
+    // 批评者统计（只读）：按 kind / 模型聚合审计事件，供界面与人工校准使用。
+    // 样本来自审计轮转窗口（readAudit 上限 200 条），不是全量历史——响应里带 sampleSize 说明。
+    if (req.method === 'GET' && url.pathname === `${PREFIX}/api/critic/stats`) {
+      interface CriticBucket {
+        calls: number
+        ok: number
+        degraded: number
+        issues: number
+      }
+      const emptyBucket = (): CriticBucket => ({ calls: 0, ok: 0, degraded: 0, issues: 0 })
+      const bump = (
+        map: Map<string, CriticBucket>,
+        key: string,
+        value: { ok: boolean; degraded: boolean; issues: number },
+      ): void => {
+        const bucket = map.get(key) ?? emptyBucket()
+        bucket.calls += 1
+        if (value.ok) bucket.ok += 1
+        if (value.degraded) bucket.degraded += 1
+        bucket.issues += value.issues
+        map.set(key, bucket)
+      }
+      const entries = readAudit(200).filter(entry => entry.event === 'memory.critic')
+      const totals = emptyBucket()
+      const byKind = new Map<string, CriticBucket>()
+      const byModel = new Map<string, CriticBucket>()
+      for (const entry of entries) {
+        const payload = entry.payload
+        const ok = payload.ok === true
+        const degraded = typeof payload.degraded === 'string'
+        const issues = typeof payload.issues === 'number' ? payload.issues : 0
+        const kind = typeof payload.kind === 'string' ? payload.kind : 'unknown'
+        const model = typeof payload.critic === 'string' ? payload.critic : 'unknown'
+        totals.calls += 1
+        if (ok) totals.ok += 1
+        if (degraded) totals.degraded += 1
+        totals.issues += issues
+        bump(byKind, kind, { ok, degraded, issues })
+        bump(byModel, model, { ok, degraded, issues })
+      }
+      const toList = (map: Map<string, CriticBucket>): Array<{ key: string; calls: number; ok: number; degraded: number; issues: number }> =>
+        [...map.entries()]
+          .map(([key, value]) => ({ key, ...value }))
+          .sort((left, right) => right.calls - left.calls)
+      sendJson(res, 200, {
+        ok: true,
+        enabled: criticEnabled(),
+        routes: criticRoutes(),
+        sampleSize: entries.length,
+        totals,
+        byKind: toList(byKind),
+        byModel: toList(byModel),
+      })
+      return
+    }
+
     // 批量重试：把「因模型容量/瞬时错误卡在 human_intervention」的记录重置并重跑初审。
     // 2026-10-25 真实使用反馈：24/119 条是这样堆积出来的（review/debate 的 maxTokens 太小，
     // 思考型模型把额度全花在 reasoning 上）。这些不是"需要人判断"的问题，是机械失败。

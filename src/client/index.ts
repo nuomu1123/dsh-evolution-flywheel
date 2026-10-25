@@ -1492,6 +1492,12 @@ function MemoryExplorerPage() {
   }>)
   const [diagLoading, setDiagLoading] = React.useState(false)
   const [merging, setMerging] = React.useState(false)
+  // 批评者统计（模板功能的可观测面）：按 kind/模型聚合，用于判断「这个批评者值不值得信」。
+  const [criticStats, setCriticStats] = React.useState(null as null | {
+    sampleSize: number
+    totals: { calls: number; ok: number; degraded: number; issues: number }
+    byKind: Array<{ key: string; calls: number; ok: number; degraded: number; issues: number }>
+  })
   // 批量确认的结果提示（2026-10-25：57 条待处理没法逐条点）
   const [batchNotice, setBatchNotice] = React.useState('')
   // 批量确认要两步：第一次只说明范围，第二次才真正提交（Host 同样要求 confirm:true）。
@@ -1682,6 +1688,41 @@ function MemoryExplorerPage() {
       setError((caught as Error)?.message || '合并失败')
     } finally {
       setMerging(false)
+    }
+  }
+
+  /** 拉批评者统计（只读）。样本来自审计轮转窗口，不是全量历史。 */
+  const loadCriticStats = async (): Promise<void> => {
+    setError('')
+    try {
+      const response = await fetch(`${MEMORY_API}/critic/stats`, { cache: 'no-store' })
+      const body = await response.json() as {
+        ok?: boolean
+        error?: string
+        sampleSize?: number
+        totals?: { calls?: unknown; ok?: unknown; degraded?: unknown; issues?: unknown }
+        byKind?: Array<{ key?: unknown; calls?: unknown; ok?: unknown; degraded?: unknown; issues?: unknown }>
+      }
+      if (!response.ok || body.ok !== true) throw new Error(body.error ?? `HTTP ${response.status}`)
+      const num = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) ? value : 0
+      setCriticStats({
+        sampleSize: num(body.sampleSize),
+        totals: {
+          calls: num(body.totals?.calls),
+          ok: num(body.totals?.ok),
+          degraded: num(body.totals?.degraded),
+          issues: num(body.totals?.issues),
+        },
+        byKind: (Array.isArray(body.byKind) ? body.byKind : []).slice(0, 6).map(entry => ({
+          key: typeof entry.key === 'string' ? entry.key : 'unknown',
+          calls: num(entry.calls),
+          ok: num(entry.ok),
+          degraded: num(entry.degraded),
+          issues: num(entry.issues),
+        })),
+      })
+    } catch (caught) {
+      setError((caught as Error)?.message || '批评者统计失败')
     }
   }
 
@@ -2590,6 +2631,25 @@ function MemoryExplorerPage() {
                 onClick: () => { void mergeGroup(group) },
               }, merging ? '合并中…' : '合并保留最新'),
             ]))),
+      // 批评者（模板功能）的可观测面：先看调用/降级/意见数，再决定这个批评者值不值得信。
+      h('div', { key: 'critic', style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', fontSize: '11px' } }, [
+        h('button', {
+          key: 'btn',
+          type: 'button',
+          style: memoryStyles.button,
+          onClick: () => { void loadCriticStats() },
+        }, '批评者统计'),
+        criticStats === null
+          ? null
+          : h('span', { key: 'sum', style: { opacity: 0.8 } },
+            `样本 ${criticStats.sampleSize} · 调用 ${criticStats.totals.calls} · 降级 ${criticStats.totals.degraded} · 意见 ${criticStats.totals.issues}`),
+        ...(criticStats === null
+          ? []
+          : criticStats.byKind.map((entry: { key: string; calls: number; issues: number }) => h('span', {
+            key: `kind-${entry.key}`,
+            style: { opacity: 0.7 },
+          }, `${entry.key}: ${entry.calls} 次 / ${entry.issues} 条`))),
+      ]),
     ]),
     activeTab === 'debate'
       ? h('div', { key: 'debate-banner', style: memoryStyles.debateBanner }, [
