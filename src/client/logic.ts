@@ -96,6 +96,121 @@ export function memoryTypeLabel(type: MemoryItem['type']): string {
   return type === 'fact' ? '事实' : '偏好'
 }
 
+/**
+ * 跨学科洞察的五步「认知推导流水线」标签。
+ * 与 Host 端 `DMA_INSIGHT_STEP_LABELS` 一一对应；别名用于兼容旧三段式数据与模型的轻微措辞漂移。
+ * 顺序即推导顺序：原貌 -> 概括 -> 迁移 -> 代价 -> 人类启示。
+ */
+const INSIGHT_STEP_DEFS = [
+  { key: 'origin', label: '学科知识原貌', aliases: ['学科知识原貌', '知识原貌', '学科原貌', '学科视角'] },
+  { key: 'structure', label: '结构概括', aliases: ['结构概括', '底层逻辑', '运作机制'] },
+  { key: 'mapping', label: '映射与套用', aliases: ['映射与套用', '映射套用', '映射迁移', '对进化插件'] },
+  { key: 'tradeoff', label: '作用与代价', aliases: ['作用与代价', '代价与作用', 'trade-off', 'tradeoff', 'trade_off'] },
+  { key: 'human', label: '人类启示', aliases: ['人类启示', '现实启示', '人类建议'] },
+] as const
+
+export type InsightStepKey = typeof INSIGHT_STEP_DEFS[number]['key']
+
+export interface InsightStep {
+  key: InsightStepKey
+  /** 推导序号，从 1 开始。 */
+  index: number
+  /** 规范标签名（不含【】）。 */
+  label: string
+  /** 原文标签（含【】），用于界面上逐字高亮。 */
+  tag: string
+  text: string
+}
+
+export interface InsightBreakdown {
+  steps: InsightStep[]
+  /** 第一个标签之前的行（通常是 `[DMA 元认知] 标题`）。 */
+  preamble: string
+  /** 命中的步数。 */
+  matched: number
+  /** 是否足够当作「思维推导卡片」渲染；不足则回退纯文本。 */
+  structured: boolean
+}
+
+const INSIGHT_TAG_RE = /【([^】\n]{1,40})】/gu
+/** 卡片正文里的来源 footer：`\n来源：...`，解析时必须切掉，不能混进最后一步。 */
+const INSIGHT_FOOTER_RE = /\n\s*(?:来源|参考|sources?)\s*[:：]/iu
+
+/** 把模型可能写入的字面 `\n` 还原成真换行，再统一 CRLF。 */
+function normalizeInsightContent(content: string): string {
+  return content.replace(/\r\n?/gu, '\n').replace(/\\n/gu, '\n')
+}
+
+/** 清掉步骤正文的行首序号/项目符号与行尾空白。 */
+function cleanInsightStepBody(body: string): string {
+  const footer = body.search(INSIGHT_FOOTER_RE)
+  const head = footer >= 0 ? body.slice(0, footer) : body
+  return head
+    .replace(/^\s*(?:[-*•·]|\d+[.、)．]|（\d+）|[一二三四五六七八九十]+[、.])\s*/u, '')
+    // 模型偶尔写成 `**【标签】**：正文`，标签前后的 markdown 记号与冒号都要剥掉。
+    .replace(/^[\s*_`~:：-]+/u, '')
+    .replace(/[ \t]+$/gmu, '')
+    // 切段按下一个标签的位置，正文尾部会残留「5. 」这类序号，必须一并清掉。
+    .replace(/(?:\s*(?:\d+[.、)．]|（\d+）|[一二三四五六七八九十]+[、.]))?\s*$/u, '')
+    .replace(/[\s*_`~]+$/u, '')
+}
+
+/**
+ * 解析 meta_insight 正文为五步推导卡片数据。
+ *
+ * 解析基于标签位置而非行号：即使模型没换行、或在同一行里写满五步，也能切段。
+ * 命中少于 3 步时 `structured = false`，由调用方回退纯文本，绝不丢内容。
+ */
+export function parseMetaInsight(content: string): InsightBreakdown {
+  const text = normalizeInsightContent(content ?? '')
+  const hits: Array<{ key: InsightStepKey; label: string; tag: string; start: number; end: number }> = []
+  const seen = new Set<InsightStepKey>()
+
+  INSIGHT_TAG_RE.lastIndex = 0
+  for (;;) {
+    const match = INSIGHT_TAG_RE.exec(text)
+    if (match === null) break
+    const raw = (match[1] ?? '').trim()
+    if (raw === '') continue
+    const def = INSIGHT_STEP_DEFS.find(item =>
+      item.aliases.some(alias => raw.toLowerCase().includes(alias.toLowerCase())))
+    if (def === undefined || seen.has(def.key)) continue
+    seen.add(def.key)
+    hits.push({
+      key: def.key,
+      label: def.label,
+      tag: `【${raw}】`,
+      start: match.index,
+      end: match.index + match[0].length,
+    })
+  }
+
+  hits.sort((left, right) => left.start - right.start)
+  const steps: InsightStep[] = hits.map((hit, index) => {
+    const next = hits[index + 1]
+    const body = text.slice(hit.end, next === undefined ? text.length : next.start)
+    return {
+      key: hit.key,
+      index: index + 1,
+      label: hit.label,
+      tag: hit.tag,
+      text: cleanInsightStepBody(body),
+    }
+  })
+  const first = hits[0]
+  // 一个标签都没命中时，整段文本就是 preamble：调用方回退纯文本时不会丢内容。
+  const preamble = first === undefined
+    ? text.trim()
+    : cleanInsightStepBody(text.slice(0, first.start))
+
+  return {
+    steps,
+    preamble,
+    matched: steps.length,
+    structured: steps.length >= 3,
+  }
+}
+
 /** 把 ISO 时间格式化为可读的本地时间标签。 */
 export function formatMemoryTime(value: string): string {
   const date = new Date(value)

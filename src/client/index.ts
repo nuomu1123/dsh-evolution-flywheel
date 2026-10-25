@@ -19,6 +19,7 @@ import {
   debateVerdictText,
   hasDebateRecord,
   isMetaItem,
+  parseMetaInsight,
   originLabel,
   matchesFilter,
   auditItem,
@@ -769,6 +770,60 @@ const memoryStyles = {
     padding: '1px 7px',
     fontSize: '11px',
   },
+  insightCard: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    border: '1px solid rgba(147, 51, 234, 0.28)',
+    borderRadius: '10px',
+    padding: '8px 10px',
+    background: 'rgba(147, 51, 234, 0.045)',
+  },
+  insightPreamble: {
+    fontSize: '10px',
+    opacity: 0.6,
+    lineHeight: 1.5,
+    overflowWrap: 'anywhere',
+  },
+  insightStep: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+    borderLeft: '2px solid rgba(147, 51, 234, 0.45)',
+    paddingLeft: '8px',
+  },
+  insightStepHead: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    flexWrap: 'wrap',
+  },
+  insightSeq: {
+    fontSize: '10px',
+    fontWeight: 700,
+    letterSpacing: '0.04em',
+    color: '#9333ea',
+    opacity: 0.85,
+  },
+  insightTag: {
+    fontSize: '11px',
+    fontWeight: 700,
+    color: '#9333ea',
+    background: 'rgba(147, 51, 234, 0.12)',
+    borderRadius: '4px',
+    padding: '1px 5px',
+  },
+  insightBody: {
+    lineHeight: 1.65,
+    whiteSpace: 'pre-wrap',
+    overflowWrap: 'anywhere',
+  },
+  insightBodyClamp: {
+    display: '-webkit-box',
+    WebkitLineClamp: 1,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
+  },
   statWide: {
     flex: '1 1 240px',
     minWidth: '240px',
@@ -1224,6 +1279,45 @@ const CARD_DENSITY = {
   standard: { padding: '12px 14px', gap: '12px', fontSize: '13px' },
   large: { padding: '18px 20px', gap: '16px', fontSize: '14px' },
 } as const
+
+/**
+ * meta_insight 的「思维推导卡片」。
+ *
+ * 认知飞轮要求跨学科洞察按五步展开（原貌 → 概括 → 迁移 → 代价 → 人类启示）；
+ * 这里把五个【标签】高亮成阶梯、正文分层，折叠态每步压成一行。
+ * 解析结果不足三步（旧数据/模型跑偏）时原样回退纯文本，绝不丢内容。
+ */
+function renderInsightCard(content: string, expanded: boolean, fontSize: string) {
+  const breakdown = parseMetaInsight(content)
+  if (!breakdown.structured) {
+    return h('div', {
+      key: 'content',
+      style: expanded
+        ? { ...memoryStyles.content, fontSize }
+        : { ...memoryStyles.content, ...memoryStyles.contentClamp, fontSize },
+    }, content)
+  }
+  return h('div', { key: 'insight-card', style: memoryStyles.insightCard }, [
+    breakdown.preamble === ''
+      ? null
+      : h('div', { key: 'preamble', style: memoryStyles.insightPreamble }, breakdown.preamble),
+    ...breakdown.steps.map(step => h('div', {
+      key: `insight-${step.key}`,
+      style: memoryStyles.insightStep,
+    }, [
+      h('div', { key: 'head', style: memoryStyles.insightStepHead }, [
+        h('span', { key: 'seq', style: memoryStyles.insightSeq }, `0${step.index}`),
+        h('span', { key: 'tag', style: memoryStyles.insightTag }, step.tag),
+      ]),
+      h('div', {
+        key: 'body',
+        style: expanded
+          ? { ...memoryStyles.insightBody, fontSize }
+          : { ...memoryStyles.insightBody, ...memoryStyles.insightBodyClamp, fontSize },
+      }, step.text === '' ? '（这一步模型没有输出）' : step.text),
+    ])),
+  ])
+}
 
 const WhaleMascot = React.memo(function WhaleMascot(props: { busy: boolean; error: boolean }) {
   const [tip, setTip] = React.useState('正在深度思考…')
@@ -2288,12 +2382,18 @@ function MemoryExplorerPage() {
           h('div', { key: 'main', style: memoryStyles.itemMain }, [
             h('div', { key: 'provenance', style: memoryStyles.provenance },
               `创建 ${formatMemoryTime(item.createdAt)} · 来源 ${originLabel(item.origin)}${item.discipline === undefined ? '' : ` · ${item.discipline}`} · ${perceptionLabel(item)}`),
-            h('div', {
-              key: 'content',
-              style: isExpanded
-                ? { ...memoryStyles.content, fontSize: CARD_DENSITY[density as keyof typeof CARD_DENSITY].fontSize }
-                : { ...memoryStyles.content, ...memoryStyles.contentClamp, fontSize: CARD_DENSITY[density as keyof typeof CARD_DENSITY].fontSize },
-            }, item.content),
+            item.type === 'meta_insight'
+              ? renderInsightCard(
+                item.content,
+                isExpanded,
+                CARD_DENSITY[density as keyof typeof CARD_DENSITY].fontSize,
+              )
+              : h('div', {
+                key: 'content',
+                style: isExpanded
+                  ? { ...memoryStyles.content, fontSize: CARD_DENSITY[density as keyof typeof CARD_DENSITY].fontSize }
+                  : { ...memoryStyles.content, ...memoryStyles.contentClamp, fontSize: CARD_DENSITY[density as keyof typeof CARD_DENSITY].fontSize },
+              }, item.content),
             item.type === 'extraction_strategy'
               ? h('div', { key: 'strategy-brief', style: memoryStyles.strategyBrief }, [
                 item.rule === true

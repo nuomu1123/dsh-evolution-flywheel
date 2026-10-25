@@ -18,11 +18,12 @@
     "cordis.patch.yml",
     "dsh.plugin.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "THE_GENESIS.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
-    "test": "node --import ./test/setup.mjs --test test/plugin.test.mjs test/clarify.test.mjs test/client.test.mjs test/memory.test.mjs test/state-machine.test.mjs test/telemetry.test.mjs test/logic.test.mjs test/strategy.test.mjs test/decay.test.mjs test/curator.test.mjs test/probes.test.mjs test/repair-guards.test.mjs test/client-logic-extra.test.mjs test/browser-observer.test.mjs test/redact.test.mjs",
+    "test": "node --import ./test/setup.mjs --test test/plugin.test.mjs test/clarify.test.mjs test/client.test.mjs test/memory.test.mjs test/state-machine.test.mjs test/telemetry.test.mjs test/logic.test.mjs test/strategy.test.mjs test/decay.test.mjs test/curator.test.mjs test/probes.test.mjs test/repair-guards.test.mjs test/client-logic-extra.test.mjs test/browser-observer.test.mjs test/redact.test.mjs test/insight-pipeline.test.mjs",
     "prepublishOnly": "npm run build",
     "pack:check": "npm pack --dry-run"
   },
