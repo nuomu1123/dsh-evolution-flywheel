@@ -1235,3 +1235,26 @@ test('整理报告存储前裁剪明细，JSON 完整且关键统计不丢', asy
   assert.equal(parsed.stats.undecided, report.stats.undecided)
   assert.equal(parsed.total, report.total)
 })
+
+// 多词搜索（2026-10-25 子 Agent 实测）：旧实现整串子串匹配，
+// 「插件 启动」这类查询 4 次全部返回 0 条。改为 AND 语义：每个词都要命中。
+test('多词查询按 AND 语义，每个词都要命中', async () => {
+  await withStore(async (store) => {
+    const a = await store.appendSuggested('插件启动失败：客户端模块图未重建', 'fact')
+    const b = await store.appendSuggested('插件安装成功', 'fact')
+    const c = await store.appendSuggested('服务启动很慢', 'fact')
+    assert.ok(a)
+    assert.ok(b)
+    assert.ok(c)
+
+    const both = await store.search('插件 启动', 10)
+    assert.equal(both.length, 1, '只有同时含「插件」「启动」的记录才命中')
+    assert.equal(both[0].id, a.id)
+
+    const single = await store.search('插件', 10)
+    // 注意：store 会 ensureSeeded 注入种子记忆，所以这里是 >= 2 而不是等于 2
+    assert.ok(single.length >= 2, '单词查询语义不变（至少命中两条新写入的）')
+    assert.ok(single.some(item => item.id === a.id))
+    assert.ok(single.some(item => item.id === b.id))
+  })
+})

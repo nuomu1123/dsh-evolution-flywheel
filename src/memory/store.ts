@@ -779,12 +779,24 @@ export class MemoryStore {
     return this.runExclusive(async () => {
       await this.ensureSeeded()
       const items = await this.readAll()
+      // 多词查询按 AND 语义：每个词都必须命中（2026-10-25 子 Agent 实测：
+      // 整串子串匹配让「插件 启动」这类查询 4 次全部返回 0 条）。
+      const terms = text.split(/\s+/u).filter(term => term !== '')
       const scored: Array<{ item: MemoryRecord; score: number }> = []
       for (const item of items) {
         if (!includeArchived && item.archived === true) continue
         if (types !== undefined && !types.has(item.type)) continue
-        const score = searchScore(item, text)
-        if (score > 0) scored.push({ item, score })
+        let score = 0
+        let allMatched = true
+        for (const term of terms) {
+          const termScore = searchScore(item, term)
+          if (termScore === 0) {
+            allMatched = false
+            break
+          }
+          score += termScore
+        }
+        if (allMatched) scored.push({ item, score })
       }
       scored.sort((left, right) =>
         right.score - left.score || right.item.createdAt.localeCompare(left.item.createdAt))
