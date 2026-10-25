@@ -1174,3 +1174,36 @@ test('相似错误聚类会跳过「只剩占位符」的过泛签名', async ()
   // 归一化后只剩 `ToolError: <str>: <n>,`，信息量不足，不应聚类
   assert.equal(similarErrorGroups(items).length, 0)
 })
+
+// 自诊断（2026-10-25 反馈收官）：让插件能回答「我现在健康吗」，
+// 而不是等使用者翻源码才发现问题。
+test('自诊断能算出模型故障、待裁决分布与建议动作', async () => {
+  const { buildSelfDiagnosis } = await import('../lib/memory/diagnosis.js')
+  const now = new Date().toISOString()
+  const items = [
+    { id: 'a', content: 'x', type: 'fact', status: 'suggested', createdAt: now },
+    { id: 'b', content: 'y', type: 'skill_error_fix', status: 'human_intervention', createdAt: now, debateSummary: '初审失败：LLM 未返回 JSON' },
+    { id: 'c', content: 'z', type: 'skill_error_fix', status: 'human_intervention', createdAt: now, debateSummary: '证据不足，转人工' },
+    { id: 'd', content: 'w', type: 'skill_error_fix', status: 'human_intervention', createdAt: now, debateSummary: '模型把 maxTokens=500 全用在思考上（结束原因 max-tokens）' },
+    { id: 'e', content: 'v', type: 'skill_error_fix', status: 'approved', createdAt: now, archived: true },
+  ]
+  const d = buildSelfDiagnosis(items)
+  assert.equal(d.totals.all, 5)
+  assert.equal(d.totals.active, 4, '归档记录不计入 active')
+  assert.equal(d.pending.awaitingConfirm, 1)
+  assert.equal(d.pending.needsHuman, 3)
+  assert.equal(d.pending.modelFailure, 2)
+  assert.equal(d.pending.realJudgement, 1)
+  assert.equal(d.llmFailures.byKind['JSON 解析失败'], 1)
+  assert.equal(d.llmFailures.byKind['reasoning 吃光 token'], 1)
+  assert.ok(d.suggestions.some(s => s.includes('批量重试')))
+  assert.ok(d.suggestions.some(s => s.includes('亲自判断')))
+})
+
+test('自诊断在没有问题时给出正常结论，而不是空数组', async () => {
+  const { buildSelfDiagnosis } = await import('../lib/memory/diagnosis.js')
+  const d = buildSelfDiagnosis([])
+  assert.equal(d.totals.all, 0)
+  assert.equal(d.suggestions.length, 1)
+  assert.match(d.suggestions[0], /没有需要处理的问题/)
+})

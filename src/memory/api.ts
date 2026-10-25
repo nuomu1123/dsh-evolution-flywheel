@@ -21,6 +21,7 @@ import type { SkillReviewEngine } from './state-machine.js'
 import { createStrategyHooks } from './strategy.js'
 import type { MemoryContextBase } from './context.js'
 import { archiveIdsOf, buildProbeEvidence, contentSimilarity, parseCurationPayload, similarErrorGroups, summarizeCurationQuality, summarizeCurationWithLlm } from './curator.js'
+import { buildSelfDiagnosis, isStuckReview } from './diagnosis.js'
 import { extractJson } from './dma.js'
 import { runCurationCluster } from './curation-cluster.js'
 import { complete } from './review-driver.js'
@@ -36,12 +37,10 @@ const MAX_BODY_BYTES = 16 * 1024
  * 批量重试只碰这些；正常的人工裁决记录不会被动。
  * 2026-10-25 实测来源：思考型模型把 maxTokens 全花在 reasoning 上、流式连接中断。
  */
-export const STUCK_REVIEW_REASON = /max-tokens|未输出正文|连接中断|流式响应中断|ECONNRESET|socket hang up|fetch failed|LLM 未返回 JSON|JSON 不完整|JSON 不是对象|Expected .*in JSON/iu
+// 诊断口径统一放在 diagnosis.ts；这里 re-export 保持既有导入路径不变。
+export { STUCK_REVIEW_REASON, isStuckReview } from './diagnosis.js'
 
-/** 是否是「因模型故障卡住」的记录（可批量重试）。 */
-export function isStuckReview(record: { status?: string; debateSummary?: string }): boolean {
-  return record.status === 'human_intervention' && STUCK_REVIEW_REASON.test(record.debateSummary ?? '')
-}
+
 
 export interface MemoryApiWebServer {
   register(options: {
@@ -770,6 +769,13 @@ export async function handleMemoryApi(
         ...(halted === '' ? {} : { halted }),
         details,
       })
+      return
+    }
+
+    // 自诊断：把「哪里疼」聚合成一份可直接读的报告（不读文件、不调模型）。
+    if (req.method === 'GET' && url.pathname === `${PREFIX}/api/self-diagnosis`) {
+      const items = await store.list()
+      sendJson(res, 200, { ok: true, diagnosis: buildSelfDiagnosis(items) })
       return
     }
 
