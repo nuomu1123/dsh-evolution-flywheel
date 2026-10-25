@@ -8,6 +8,7 @@
  *
  * 只做状态流转与持久化；LLM 审阅/辩论由 SkillReviewDriver 注入，便于测试与替换。
  */
+import { appendAudit } from '../audit.js'
 import { readBudget } from './budget.js'
 import type { MemoryEventHub } from './events.js'
 import { clampMetaInsight, sanitizeText } from './sanitize.js'
@@ -152,6 +153,12 @@ export class SkillReviewEngine {
       }
 
       const reviewReason = sanitize(verdict.reason, 500)
+      // 记录审阅结论：批评者采纳率要靠它关联（批评有意见 → 最终是否被驳回）。
+      appendAudit('memory.review.verdict', {
+        id: record.id,
+        decision: verdict.decision,
+        flywheel: 'comprehend',
+      })
       if (verdict.decision === 'approve') {
         return this.reflectAfter(
           await this.patch(key, {

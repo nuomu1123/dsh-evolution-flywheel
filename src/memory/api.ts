@@ -850,6 +850,32 @@ export async function handleMemoryApi(
         [...map.entries()]
           .map(([key, value]) => ({ key, ...value }))
           .sort((left, right) => right.calls - left.calls)
+
+      // 采纳率：批评「提出过意见」的记录，看最终审阅结论是否与之同向（驳回=一致）。
+      // 只有同时出现在 critic(review) 与 review.verdict 两个事件里的 id 才计入 tracked。
+      const verdicts = new Map<string, string>()
+      const criticisms = new Map<string, number>()
+      for (const entry of readAudit(200)) {
+        const id = typeof entry.payload.id === 'string' ? entry.payload.id : ''
+        if (id === '') continue
+        if (entry.event === 'memory.review.verdict') {
+          const decision = typeof entry.payload.decision === 'string' ? entry.payload.decision : ''
+          if (decision !== '' && !verdicts.has(id)) verdicts.set(id, decision)
+        } else if (entry.event === 'memory.critic' && entry.payload.source === 'review') {
+          const issues = typeof entry.payload.issues === 'number' ? entry.payload.issues : 0
+          if (!criticisms.has(id)) criticisms.set(id, issues)
+        }
+      }
+      let tracked = 0
+      let aligned = 0
+      for (const [id, issues] of criticisms) {
+        if (issues === 0) continue
+        const decision = verdicts.get(id)
+        if (decision === undefined) continue
+        tracked += 1
+        if (decision === 'reject') aligned += 1
+      }
+
       sendJson(res, 200, {
         ok: true,
         enabled: criticEnabled(),
@@ -858,6 +884,12 @@ export async function handleMemoryApi(
         totals,
         byKind: toList(byKind),
         byModel: toList(byModel),
+        adoption: {
+          tracked,
+          aligned,
+          misaligned: tracked - aligned,
+          rate: tracked === 0 ? null : aligned / tracked,
+        },
       })
       return
     }

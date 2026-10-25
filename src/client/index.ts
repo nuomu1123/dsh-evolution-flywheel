@@ -1497,6 +1497,7 @@ function MemoryExplorerPage() {
     sampleSize: number
     totals: { calls: number; ok: number; degraded: number; issues: number }
     byKind: Array<{ key: string; calls: number; ok: number; degraded: number; issues: number }>
+    adoption: { tracked: number; aligned: number; misaligned: number; rate: number | null }
   })
   // 批量确认的结果提示（2026-10-25：57 条待处理没法逐条点）
   const [batchNotice, setBatchNotice] = React.useState('')
@@ -1702,6 +1703,7 @@ function MemoryExplorerPage() {
         sampleSize?: number
         totals?: { calls?: unknown; ok?: unknown; degraded?: unknown; issues?: unknown }
         byKind?: Array<{ key?: unknown; calls?: unknown; ok?: unknown; degraded?: unknown; issues?: unknown }>
+        adoption?: { tracked?: unknown; aligned?: unknown; misaligned?: unknown; rate?: unknown }
       }
       if (!response.ok || body.ok !== true) throw new Error(body.error ?? `HTTP ${response.status}`)
       const num = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) ? value : 0
@@ -1720,6 +1722,12 @@ function MemoryExplorerPage() {
           degraded: num(entry.degraded),
           issues: num(entry.issues),
         })),
+        adoption: {
+          tracked: num(body.adoption?.tracked),
+          aligned: num(body.adoption?.aligned),
+          misaligned: num(body.adoption?.misaligned),
+          rate: typeof body.adoption?.rate === 'number' && Number.isFinite(body.adoption.rate) ? body.adoption.rate : null,
+        },
       })
     } catch (caught) {
       setError((caught as Error)?.message || '批评者统计失败')
@@ -2643,6 +2651,13 @@ function MemoryExplorerPage() {
           ? null
           : h('span', { key: 'sum', style: { opacity: 0.8 } },
             `样本 ${criticStats.sampleSize} · 调用 ${criticStats.totals.calls} · 降级 ${criticStats.totals.degraded} · 意见 ${criticStats.totals.issues}`),
+        // 采纳率：批评提出意见的记录里，最终被审阅驳回（与批评同向）的比例。
+        criticStats === null
+          ? null
+          : h('span', { key: 'adopt', style: { opacity: 0.8 } },
+            criticStats.adoption.rate === null
+              ? '采纳率：样本不足'
+              : `采纳率 ${Math.round(criticStats.adoption.rate * 100)}%（${criticStats.adoption.aligned}/${criticStats.adoption.tracked}）`),
         ...(criticStats === null
           ? []
           : criticStats.byKind.map((entry: { key: string; calls: number; issues: number }) => h('span', {
