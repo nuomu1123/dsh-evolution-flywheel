@@ -361,7 +361,7 @@ const memoryStyles = {
     color: 'inherit',
     font: 'inherit',
     fontSize: '13px',
-    outline: 'none',
+    // 保留浏览器默认 focus ring：删掉 outline:none，键盘用户才能看到焦点（P2-13）。
   },
   button: {
     border: '1px solid var(--dsw-alias-border-base, rgba(128,128,128,.35))',
@@ -591,7 +591,7 @@ const memoryStyles = {
     font: 'inherit',
     fontSize: '12px',
     lineHeight: 1.5,
-    outline: 'none',
+    // 同上：多行输入框也保留可见焦点。
   },
   helper: {
     color: 'var(--dsw-alias-text-warning, #b45309)',
@@ -1460,6 +1460,22 @@ function MemoryExplorerPage() {
       // 隐私模式等场景写不了，忽略即可。
     }
   }
+
+  // 自诊断面板：模型故障可重试、相似错误可合并（P2-1：Host 有能力但界面没入口）。
+  const [diagnosis, setDiagnosis] = React.useState(null as null | {
+    awaitingConfirm: number
+    awaitingReview: number
+    needsHuman: number
+    modelFailure: number
+    realJudgement: number
+  })
+  const [similarGroups, setSimilarGroups] = React.useState(null as null | Array<{
+    signature: string
+    ids: string[]
+    excerpts: string[]
+  }>)
+  const [diagLoading, setDiagLoading] = React.useState(false)
+  const [merging, setMerging] = React.useState(false)
   // 批量确认的结果提示（2026-10-25：57 条待处理没法逐条点）
   const [batchNotice, setBatchNotice] = React.useState('')
   // 批量确认要两步：第一次只说明范围，第二次才真正提交（Host 同样要求 confirm:true）。
@@ -1583,6 +1599,73 @@ function MemoryExplorerPage() {
       setError((caught as Error)?.message || '重试失败')
     } finally {
       setRetrying(false)
+    }
+  }
+
+  /** 拉自诊断摘要与相似错误组（只读，不触发任何写操作）。 */
+  const loadDiagnosis = async (): Promise<void> => {
+    setDiagLoading(true)
+    setError('')
+    try {
+      const [diagResponse, similarResponse] = await Promise.all([
+        fetch(`${MEMORY_API}/self-diagnosis`, { cache: 'no-store' }),
+        fetch(`${MEMORY_API}/similar-errors`, { cache: 'no-store' }),
+      ])
+      const diagBody = await diagResponse.json() as {
+        ok?: boolean
+        diagnosis?: { pending?: Record<string, unknown> }
+        error?: string
+      }
+      if (!diagResponse.ok || diagBody.ok !== true) {
+        throw new Error(diagBody.error ?? `HTTP ${diagResponse.status}`)
+      }
+      const pending = diagBody.diagnosis?.pending ?? {}
+      const pick = (key: string): number => {
+        const value = pending[key]
+        return typeof value === 'number' && Number.isFinite(value) ? value : 0
+      }
+      setDiagnosis({
+        awaitingConfirm: pick('awaitingConfirm'),
+        awaitingReview: pick('awaitingReview'),
+        needsHuman: pick('needsHuman'),
+        modelFailure: pick('modelFailure'),
+        realJudgement: pick('realJudgement'),
+      })
+      const similarBody = await similarResponse.json() as { ok?: boolean; groups?: unknown }
+      const groups = Array.isArray(similarBody.groups) ? similarBody.groups : []
+      setSimilarGroups(groups.filter((group): group is { signature: string; ids: string[]; excerpts: string[] } =>
+        typeof group === 'object' && group !== null
+        && typeof (group as { signature?: unknown }).signature === 'string'
+        && Array.isArray((group as { ids?: unknown }).ids)))
+    } catch (caught) {
+      setError((caught as Error)?.message || '自诊断失败')
+    } finally {
+      setDiagLoading(false)
+    }
+  }
+
+  /** 合并一组相似错误：保留第一条、其余归档（Host 侧只归档不物理删除）。 */
+  const mergeGroup = async (group: { signature: string; ids: string[] }): Promise<void> => {
+    const keepId = group.ids[0]
+    const mergeIds = group.ids.slice(1)
+    if (keepId === undefined || mergeIds.length === 0) return
+    setMerging(true)
+    setError('')
+    try {
+      const response = await fetch(`${MEMORY_API}/merge-errors`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ keepId, mergeIds }),
+      })
+      const body = await response.json() as { ok?: boolean; merged?: number; error?: string }
+      if (!response.ok || body.ok !== true) throw new Error(body.error ?? `HTTP ${response.status}`)
+      setBatchNotice(`已合并 ${body.merged ?? mergeIds.length} 条相似记录（保留 1 条，其余归档）`)
+      await loadDiagnosis()
+      await load()
+    } catch (caught) {
+      setError((caught as Error)?.message || '合并失败')
+    } finally {
+      setMerging(false)
     }
   }
 
@@ -1798,6 +1881,17 @@ function MemoryExplorerPage() {
       })
     }
   }
+
+  // 键盘可达性：Esc 关闭详情，避免必须用鼠标点「返回」（P2-13）。
+  React.useEffect(() => {
+    if (detailId === null) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeDetail()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+    // closeDetail 每次渲染都是新闭包，只依赖 detailId 避免反复增删监听。
+  }, [detailId])
 
   const distill = async () => {
     setDistilling(true)
@@ -2265,7 +2359,9 @@ function MemoryExplorerPage() {
       }, [
         h('span', { key: 'label', style: memoryStyles.statLabel }, suggestedCount === 0 ? '待确认 · 暂无草稿' : '待确认 · 点击批量确认'),
         h('span', { key: 'value', style: memoryStyles.statValue }, String(suggestedCount)),
-        batchNotice === '' ? null : h('span', { key: 'notice', style: { fontSize: '11px', color: '#666666' } }, batchNotice),
+        batchNotice === ''
+      ? null
+      : h('span', { key: 'notice', role: 'status', 'aria-live': 'polite', style: { fontSize: '11px', color: '#666666' } }, batchNotice),
       ]),
       h('div', { key: 'spec', style: { ...memoryStyles.stat, ...memoryStyles.statInfo } }, [
         h('span', { key: 'label', style: memoryStyles.statLabel }, '今日漫游'),
@@ -2426,10 +2522,13 @@ function MemoryExplorerPage() {
           ]),
       ]),
     ]),
-    h('div', { key: 'tabs', style: memoryStyles.tabs },
+    // 键盘可达性：tablist/tab + aria-selected，屏幕阅读器才能读出「当前分区」（P2-13）。
+    h('div', { key: 'tabs', role: 'tablist', style: memoryStyles.tabs },
       FILTER_TABS.map(tab => h('button', {
         key: tab.id,
         type: 'button',
+        role: 'tab',
+        'aria-selected': activeTab === tab.id,
         style: activeTab === tab.id ? { ...memoryStyles.tab, ...memoryStyles.tabActive } : memoryStyles.tab,
         onClick: () => {
           setDetailId(null)
@@ -2437,6 +2536,45 @@ function MemoryExplorerPage() {
           else setActiveTab(tab.id)
         },
       }, `${tab.label} ${counts[tab.id]}`))),
+    // 自诊断面板：把「模型故障可重试」与「相似错误可合并」变成按钮，而不是让用户去跑 curl（P2-1）。
+    h('div', { key: 'diagnosis', style: { display: 'flex', flexDirection: 'column', gap: '6px' } }, [
+      h('div', { key: 'bar', style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, [
+        h('button', {
+          key: 'run',
+          type: 'button',
+          style: memoryStyles.button,
+          disabled: diagLoading,
+          onClick: () => { void loadDiagnosis() },
+        }, diagLoading ? '诊断中…' : '自诊断'),
+        diagnosis === null
+          ? null
+          : h('span', { key: 'summary', style: { fontSize: '12px', opacity: 0.8 } },
+            `待确认 ${diagnosis.awaitingConfirm} · 待审阅 ${diagnosis.awaitingReview} · 待圣裁 ${diagnosis.needsHuman}（模型故障 ${diagnosis.modelFailure} / 真需判断 ${diagnosis.realJudgement}）`),
+      ]),
+      similarGroups === null
+        ? null
+        : similarGroups.length === 0
+          ? h('div', { key: 'none', style: { fontSize: '11px', opacity: 0.6 } }, '没有可合并的相似错误组')
+          : h('div', { key: 'groups', style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
+            similarGroups.slice(0, 8).map((group: { signature: string; ids: string[] }) => h('div', {
+              key: group.signature,
+              style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', fontSize: '11px' },
+            }, [
+              h('span', {
+                key: 'sig',
+                style: { opacity: 0.8, maxWidth: '520px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                title: group.signature,
+              }, `${group.signature}（${group.ids.length} 条）`),
+              h('button', {
+                key: 'merge',
+                type: 'button',
+                style: memoryStyles.button,
+                disabled: merging,
+                title: '保留最新一条，其余归档（可恢复）',
+                onClick: () => { void mergeGroup(group) },
+              }, merging ? '合并中…' : '合并保留最新'),
+            ]))),
+    ]),
     activeTab === 'debate'
       ? h('div', { key: 'debate-banner', style: memoryStyles.debateBanner }, [
         h('span', { key: 'title', style: memoryStyles.debateBannerTitle }, '辩论空间'),
@@ -2534,7 +2672,7 @@ function MemoryExplorerPage() {
       ])
       : null,
     error !== ''
-      ? h('div', { key: 'error', style: memoryStyles.errorBox }, [
+      ? h('div', { key: 'error', role: 'status', 'aria-live': 'polite', style: memoryStyles.errorBox }, [
         h('span', { key: 'text', style: memoryStyles.errorText }, error),
         h('button', {
           key: 'retry',
