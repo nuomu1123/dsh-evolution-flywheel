@@ -784,6 +784,45 @@ export async function handleMemoryApi(
       return
     }
 
+    // 一次性补标：给历史记录的 resolution 补上来源（inferred / verified）。
+    // 2026-10-25 子 Agent 反馈：库里大量解法是模型猜的，但旧记录没有 resolutionSource，
+    // recall 与界面无法区分「猜的」和「验过的」。
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/backfill-resolution-source`) {
+      if (!requireJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
+        return
+      }
+      const body = await readJsonBody(req)
+      if (body.confirm !== true) {
+        sendJson(res, 400, { ok: false, error: '补标需要 body.confirm === true（防止误请求直接改动历史记录）' })
+        return
+      }
+      const items = await store.list()
+      const candidates = items.filter(item =>
+        typeof item.resolution === 'string'
+        && item.resolution.trim() !== ''
+        && item.resolutionSource === undefined)
+      let verified = 0
+      let inferred = 0
+      for (const item of candidates) {
+        // 探针验证过或人类采纳过的算 verified；自动捕获路径生成的默认 inferred。
+        const source = item.verifiedAt !== undefined || item.humanDecision === 'adopt'
+          ? 'verified' as const
+          : 'inferred' as const
+        const updated = await store.update(item.id, { resolutionSource: source })
+        if (updated === undefined) continue
+        if (source === 'verified') verified += 1
+        else inferred += 1
+      }
+      appendAudit('memory.backfill.resolutionSource', {
+        candidates: candidates.length,
+        verified,
+        inferred,
+      })
+      sendJson(res, 200, { ok: true, candidates: candidates.length, verified, inferred })
+      return
+    }
+
     // 批量确认：把 suggested 草稿一次性确认（可限定类型）。
     // 2026-10-25 人类视角体验：57 条待处理没法逐条点，真人看到会直接关面板。
     if (req.method === 'POST' && url.pathname === `${PREFIX}/api/approve/batch`) {
