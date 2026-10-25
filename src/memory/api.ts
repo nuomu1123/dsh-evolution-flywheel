@@ -13,6 +13,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { appendAudit, readAudit } from '../audit.js'
 import { dailyBudget, readBudget } from './budget.js'
 import { memoryConfig } from './config.js'
+import { criticize, criticEnabled, criticRoutes } from './critic.js'
 import type { DmaRunner } from './dma.js'
 import type { MemoryEventHub } from './events.js'
 import { listSecurityIntercepts } from './sanitize.js'
@@ -764,6 +765,44 @@ export async function handleMemoryApi(
       if (updated !== undefined) events.publish({ type: 'memory:updated', item: updated })
       appendAudit('memory.probe.search', { id: probe.id, verdict, sources: sources.length })
       sendJson(res, 200, { ok: true, verdict, conclusion, sources, confidence, gaps, thread: nextThread, probe: updated })
+      return
+    }
+
+    // 异构批评者（模板，可替换）：手动触发一次批评，供界面/脚本调试与校准使用。
+    // 这是「第二双眼睛」，不参与裁决；即使没开 DSH_MEMORY_CRITIC 也允许手动调用。
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/critic`) {
+      if (!requireJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
+        return
+      }
+      const body = await readJsonBody(req)
+      const rawKind = typeof body.kind === 'string' ? body.kind.trim() : 'text'
+      const kind = rawKind === 'code' || rawKind === 'memory' || rawKind === 'distill' ? rawKind : 'text'
+      const content = typeof body.content === 'string' ? body.content.trim() : ''
+      if (content === '') {
+        sendJson(res, 400, { ok: false, error: 'content is required' })
+        return
+      }
+      const question = typeof body.question === 'string' ? body.question.trim() : ''
+      const result = await criticize({
+        kind,
+        content: content.slice(0, 6000),
+        ...(question === '' ? {} : { question }),
+      })
+      appendAudit('memory.critic', {
+        source: 'api',
+        kind,
+        ok: result.ok,
+        critic: result.critic,
+        issues: result.issues.length,
+        ...(result.degraded === undefined ? {} : { degraded: result.degraded }),
+      })
+      sendJson(res, 200, {
+        ok: true,
+        enabled: criticEnabled(),
+        routes: criticRoutes(),
+        result,
+      })
       return
     }
 

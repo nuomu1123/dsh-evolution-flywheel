@@ -4,6 +4,8 @@
  * 初审与辩论共用同一个 provider/model，但每次调用 maxTokens 固定为 300。
  */
 import type { MemoryContextBase } from './context.js'
+import { appendAudit } from '../audit.js'
+import { criticize, criticEnabled } from './critic.js'
 import { memoryConfig } from './config.js'
 import { clampMetaInsight, sanitizeText } from './sanitize.js'
 
@@ -136,16 +138,57 @@ function debateRoundsOf(value: unknown): DebateRound[] {
   return rounds
 }
 
+/**
+ * 审阅前的异构批评（模板，默认关闭，需 `DSH_MEMORY_CRITIC=on`）。
+ *
+ * 只在高价值条目上调用：人类干预过、重复出现、或解法很长（细节多、更容易有契约问题）。
+ * 批评者不可用时静默返回空串——审阅继续，不阻断主流程。
+ */
+async function reviewCritique(record: MemoryRecord): Promise<string> {
+  if (!criticEnabled()) return ''
+  const worth = (record.humanInterventions ?? 0) >= 1
+    || (record.count ?? 0) >= 2
+    || (record.resolution ?? '').length > 400
+  if (!worth) return ''
+  const result = await criticize({
+    kind: 'code',
+    content: [
+      `错误特征：${record.errorSignature ?? ''}`,
+      `上下文：${record.context ?? ''}`,
+      `拟采用的解决办法：${record.resolution ?? ''}`,
+    ].join('\n'),
+    question: '这条排错经验是否安全可执行？有无契约不一致、边界未处理、把推测写成事实？',
+  })
+  appendAudit('memory.critic', {
+    source: 'review',
+    id: record.id,
+    ok: result.ok,
+    critic: result.critic,
+    issues: result.issues.length,
+    ...(result.degraded === undefined ? {} : { degraded: result.degraded }),
+  })
+  if (!result.ok || result.issues.length === 0) return ''
+  const lines = result.issues.slice(0, 5).map(issue => `- [${issue.severity}] ${issue.where}：${issue.why}`)
+  return [
+    `异构批评者（${result.critic}，非最终裁决者）提出以下意见，逐条判断是否成立；不成立的请明确忽略：`,
+    ...lines,
+  ].join('\n')
+}
+
 /** 创建调用 ctx.llm 的审阅驱动。 */
 export function createLlmReviewDriver(ctx: MemoryContextBase): SkillReviewDriver {
   return {
     async review(record: MemoryRecord, strategyHint = ''): Promise<ReviewVerdict> {
+      // 异构批评（可选，模板）：只在高价值条目上调用本地批评者，把它的意见作为「参考意见」
+      // 塞进母 Agent 的输入。母 Agent 有否决权——批评不是裁判，只是第二双眼睛。
+      const critique = await reviewCritique(record)
       const prompt = [
         '你是母 Agent，负责初审子 Agent 提交的排错经验。',
         ...(strategyHint === '' ? [] : ['', strategyHint, '']),
         `错误特征：${sanitize(record.errorSignature ?? '', 300)}`,
         `任务上下文：${sanitize(record.context ?? '', 500)}`,
         `候选解决办法：${sanitize(record.resolution ?? '', 1000) || '（空）'}`,
+        ...(critique === '' ? [] : ['', critique]),
         '判断该经验是否安全、可执行、无虚构。只输出 JSON：',
         '{"decision":"approve"|"reject","reason":"不超过120字","resolution":"你建议的解决办法，不超过200字","meta_insight":"不超过100字"}',
       ].join('\n')
