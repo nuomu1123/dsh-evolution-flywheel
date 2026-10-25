@@ -392,6 +392,8 @@ const memoryStyles = {
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     overflow: 'auto',
+    // list 是固定高度的 flex 列容器：卡片必须拒绝收缩，否则五步推导会被压扁成一行半。
+    flexShrink: 0,
     minWidth: '240px',
     minHeight: '96px',
     maxWidth: '100%',
@@ -1320,7 +1322,9 @@ function renderInsightCard(content: string, expanded: boolean, fontSize: string)
     }, [
       h('div', { key: 'head', style: memoryStyles.insightStepHead }, [
         h('span', { key: 'seq', style: memoryStyles.insightSeq }, `0${step.index}`),
-        h('span', { key: 'tag', style: memoryStyles.insightTag }, step.tag),
+        // 统一显示规范五步名：旧数据原文标签（【学科视角】等）已在 content 与 preamble 里可追溯，
+        // 卡片上如果继续显示旧名字，会让人误以为五步流水线没生效。
+        h('span', { key: 'tag', style: memoryStyles.insightTag }, `【${step.label}】`),
       ]),
       h('div', {
         key: 'body',
