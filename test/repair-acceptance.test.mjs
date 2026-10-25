@@ -8,7 +8,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -103,6 +103,26 @@ test('批量确认契约：客户端必须带 confirm，Host 必须校验 confir
   assert.match(client, /approve\/batch/, '客户端必须调用批量确认端点')
   assert.match(client, /confirm: true/, '客户端必须带 confirm:true，否则 Host 一律 400')
   assert.match(api, /body\.confirm !== true/, 'Host 必须持续校验 confirm（防误请求）')
+})
+
+test('超限库：读取不拒绝、写入被拒、删除仍可用（不能锁死）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-limit-'))
+  try {
+    const file = join(dir, 'memories.jsonl')
+    const big = { id: 'mem-big', content: 'x'.repeat(1_050_000), type: 'fact', status: 'approved', createdAt: iso() }
+    await writeFile(file, `${JSON.stringify(big)}\n`, 'utf8')
+    const store = new MemoryStore(dir)
+    // 读：超限也要能打开面板（否则永远删不掉）。
+    const items = await store.list()
+    assert.equal(items.length, 1)
+    // 写：会推过上限的追加必须被拒，且错误可操作。
+    await assert.rejects(() => store.appendSuggested('新记忆', 'fact'), /1 MiB|上限/u)
+    // 瘦身：删除让文件变小，必须放行——这是超限后的唯一自救通道。
+    assert.equal(await store.delete('mem-big'), true)
+    assert.equal((await store.list()).length, 0)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test('删除/丢弃是两步确认：先上膛再执行', async () => {

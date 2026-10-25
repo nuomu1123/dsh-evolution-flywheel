@@ -5,7 +5,7 @@
  * 不接触 profile、node_modules 或其他插件的数据。
  */
 import { randomUUID } from 'node:crypto'
-import { appendFile, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, link, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { clampMetaInsight, sanitizeText } from './sanitize.js'
@@ -948,13 +948,30 @@ export class MemoryStore {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
-    await this.writeAll(seedRecords())
+    // 并发首播必须「排他创建」而不是覆盖写：writeAll 是整表替换，会把另一个进程
+    // 刚 append 的记录一起盖掉（Agent3 实测：同进程 185/200、跨进程 9/80 首播失败）。
+    const payload = seedRecords().map(item => JSON.stringify(item)).join('\n')
+    const temp = `${this.file}.${process.pid}.${randomUUID()}.tmp`
+    await mkdir(dirname(this.file), { recursive: true })
+    await writeFile(temp, payload === '' ? '' : `${payload}\n`, 'utf8')
+    try {
+      // 硬链接是原子的：目标已存在会 EEXIST，正好表示别人先播种成功，不算失败。
+      await link(temp, this.file)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    } finally {
+      await rm(temp, { force: true })
+    }
   }
 
   private async readAll(): Promise<MemoryRecord[]> {
     const text = await readFile(this.file, 'utf8')
-    if (Buffer.byteLength(text, 'utf8') > MAX_FILE_BYTES) {
-      throw new Error('memory file exceeds 1 MiB limit')
+    const bytes = Buffer.byteLength(text, 'utf8')
+    // 读路径不再因上限直接拒绝：超限时用户更需要能打开面板、能删除（否则永久锁死）。
+    if (bytes > MAX_FILE_BYTES) {
+      console.error(
+        `[dsh-evolution-flywheel] 记忆库 ${bytes} 字节已超过 1 MiB 上限：写操作会被拒绝，请归档或清理`,
+      )
     }
     const items: MemoryRecord[] = []
     for (const line of text.split('\n')) {
@@ -1010,10 +1027,50 @@ export class MemoryStore {
     return this.writes.enqueue(async () => {
       await mkdir(dirname(this.file), { recursive: true })
       const text = items.map(item => JSON.stringify(item)).join('\n')
+      const payload = text === '' ? '' : `${text}\n`
+      const targetBytes = Buffer.byteLength(payload, 'utf8')
+      // 写前预检：append 不能把库推过上限（否则之后连删除都会失败，形成死锁）。
+      if (targetBytes > MAX_FILE_BYTES) {
+        let currentBytes = 0
+        try {
+          currentBytes = (await stat(this.file)).size
+        } catch {
+          currentBytes = 0
+        }
+        // 允许「瘦身」越过检查：删除/归档/裁剪必须始终可用，否则库一旦超限就再也救不回来。
+        if (targetBytes >= currentBytes) {
+          throw new Error(
+            `记忆库将超过 1 MiB 上限（目标 ${targetBytes} 字节，当前 ${currentBytes} 字节）：请先归档或删除部分记忆再写入`,
+          )
+        }
+      }
       // 先写临时文件再 rename，避免崩溃或断电留下半行/空文件。
-      const temp = `${this.file}.${process.pid}.tmp`
-      await writeFile(temp, text === '' ? '' : `${text}\n`, 'utf8')
-      await rename(temp, this.file)
+      // 临时名带随机后缀：同进程多个 store 实例也不会互相踩。
+      const temp = `${this.file}.${process.pid}.${randomUUID()}.tmp`
+      await writeFile(temp, payload, 'utf8')
+      await this.replaceFile(temp, this.file)
     })
+  }
+
+  /** rename 在 Windows 上可能被占用方短暂挡住（EPERM/EACCES），重试几次再放弃。 */
+  private async replaceFile(temp: string, target: string): Promise<void> {
+    // 6 次、40~240ms 退避：并发读（readAll）与写会短暂互斥，实测 Windows 上常见 EPERM。
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try {
+        await rename(temp, target)
+        return
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code !== 'EPERM' && code !== 'EACCES' && code !== 'ENOENT') throw error
+        if (attempt === 5) {
+          // 最后兜底：放弃原子 rename，改为直接覆盖写。宁可牺牲原子性，也不能让记忆写不进去。
+          console.warn('[dsh-evolution-flywheel] rename 持续 EPERM，回退为直接覆盖写（放弃原子性）')
+          await writeFile(target, await readFile(temp))
+          await rm(temp, { force: true })
+          return
+        }
+        await new Promise(resolve => setTimeout(resolve, 40 * (attempt + 1)))
+      }
+    }
   }
 }

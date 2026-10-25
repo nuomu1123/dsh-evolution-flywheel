@@ -1439,6 +1439,8 @@ function MemoryExplorerPage() {
   const [distilling, setDistilling] = React.useState(false)
   const [curationDeciding, setCurationDeciding] = React.useState(null)
   const [curating, setCurating] = React.useState(false)
+  // 待人类裁决里有相当比例其实是「模型故障」遗留，可以自动重试，不该让人逐条审。
+  const [retrying, setRetrying] = React.useState(false)
   const [probeDeciding, setProbeDeciding] = React.useState(null)
   const [density, setDensity] = React.useState('standard')
   // 批量确认的结果提示（2026-10-25：57 条待处理没法逐条点）
@@ -1532,8 +1534,39 @@ function MemoryExplorerPage() {
     }
   }
 
-  const loadAudit = async () => {
-    setAuditLoading(true)
+  /**
+   * 一键重试「模型故障」遗留项：Host 侧 isStuckReview 只挑模型失败（证据不足的不动），
+   * 避免把 12 条本该自动重试的记录堆给人类逐条审。
+   */
+  const retryStuckReviews = async (): Promise<void> => {
+    setRetrying(true)
+    setError('')
+    try {
+      const response = await fetch(`${MEMORY_API}/review/retry`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ limit: 8 }),
+      })
+      const body = await response.json() as {
+        ok?: boolean
+        candidates?: number
+        succeeded?: number
+        halted?: string
+        error?: string
+      }
+      if (!response.ok || body.ok !== true) throw new Error(body.error ?? `HTTP ${response.status}`)
+      setBatchNotice(
+        `重试 ${body.succeeded ?? 0}/${body.candidates ?? 0} 条模型故障${body.halted === undefined ? '' : `（中止：${body.halted}）`}`,
+      )
+      await load()
+    } catch (caught) {
+      setError((caught as Error)?.message || '重试失败')
+    } finally {
+      setRetrying(false)
+    }
+  }
+
+  const loadAudit = async () => {    setAuditLoading(true)
     try {
       const response = await fetch(`${MEMORY_API}/audit?limit=30`, { cache: 'no-store' })
       const body = await response.json()
@@ -1964,6 +1997,26 @@ function MemoryExplorerPage() {
     }
   }
 
+  /** 撤回裁决：把已生效/已驳回的记忆退回待审阅（裁决必须可逆，不该只能靠删除）。 */
+  const reopen = async (item: MemoryItem) => {
+    setError('')
+    try {
+      const response = await fetch(`${MEMORY_API}/reopen`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: item.id }),
+      })
+      const body = await response.json()
+      if (!response.ok || body?.ok !== true) {
+        throw new Error(typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`)
+      }
+      setItems((previous: MemoryItem[]) => previous.map(existing => existing.id === item.id ? body.item : existing))
+      setBatchNotice('已退回待审阅（立即移出注入池）')
+    } catch (caught) {
+      setError((caught as Error)?.message || '退回失败')
+    }
+  }
+
   const draftOf = (item: MemoryItem): string => drafts[item.id] ?? item.resolution ?? ''
 
   const saveResolution = async (id: string, resolution: string): Promise<MemoryItem | undefined> => {
@@ -2147,6 +2200,17 @@ function MemoryExplorerPage() {
       h('div', { key: 'human', style: { ...memoryStyles.stat, ...memoryStyles.statDanger } }, [
         h('span', { key: 'label', style: memoryStyles.statLabel }, '待人类裁决'),
         h('span', { key: 'value', style: memoryStyles.statValue }, String(humanCount)),
+        // 只重试「模型故障」类；证据不足的仍留给人类（Host 侧用 isStuckReview 过滤）。
+        humanCount === 0
+          ? null
+          : h('button', {
+            key: 'retry-stuck',
+            type: 'button',
+            style: { ...memoryStyles.button, fontSize: '11px', padding: '2px 6px', alignSelf: 'flex-start' },
+            disabled: retrying,
+            title: '只重试模型故障遗留项，证据不足的不会被自动处理',
+            onClick: () => { void retryStuckReviews() },
+          }, retrying ? '重试中…' : '重试模型故障'),
       ]),
       h('div', {
         key: 'suggested',
@@ -3065,6 +3129,14 @@ function MemoryExplorerPage() {
                   else armConfirm(item.id)
                 },
               }, deleting === item.id ? '丢弃中…' : confirmingId === item.id ? '确认丢弃？' : '丢弃')
+              : null,
+            (item.status === 'approved' || item.status === 'rejected')
+              ? h('button', {
+                key: 'reopen',
+                type: 'button',
+                style: memoryStyles.save,
+                onClick: () => { void reopen(item) },
+              }, '重新审阅')
               : null,
             (item.status === 'approved' || item.status === 'rejected')
               ? h('button', {

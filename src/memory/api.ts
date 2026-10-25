@@ -129,9 +129,23 @@ export async function handleMemoryApi(
     }
 
     if (req.method === 'GET' && url.pathname === `${PREFIX}/api/health`) {
+      // 健康检查必须真读一次库：否则库超限/损坏时仍回 200（假绿），用户看不到任何异常。
+      let storeOk = true
+      let storeError = ''
+      let items = 0
+      try {
+        items = (await store.list()).length
+      } catch (error) {
+        storeOk = false
+        storeError = error instanceof Error ? error.message : String(error)
+      }
       sendJson(res, 200, {
-        ok: true,
-        health: { writeQueue: store.writeQueueBusy ? 'busy' : 'idle' },
+        ok: storeOk,
+        health: {
+          writeQueue: store.writeQueueBusy ? 'busy' : 'idle',
+          items,
+          ...(storeError === '' ? {} : { storeError }),
+        },
       })
       return
     }
@@ -559,6 +573,29 @@ export async function handleMemoryApi(
       }
       events.publish({ type: 'memory:updated', item })
       appendAudit('memory.reject', { id })
+      sendJson(res, 200, { ok: true, id, item })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/reopen`) {
+      // 裁决可逆：已生效/已驳回的记忆可以回到待审阅，不必用「删除」才能反悔。
+      if (!requireJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
+        return
+      }
+      const body = await readJsonBody(req)
+      const id = typeof body.id === 'string' ? body.id.trim() : ''
+      if (id === '') {
+        sendJson(res, 400, { ok: false, error: 'id is required' })
+        return
+      }
+      const item = await store.update(id, { status: 'staged' })
+      if (item === undefined) {
+        sendJson(res, 404, { ok: false, error: 'memory not found' })
+        return
+      }
+      events.publish({ type: 'memory:updated', item })
+      appendAudit('memory.reopen', { id })
       sendJson(res, 200, { ok: true, id, item })
       return
     }
