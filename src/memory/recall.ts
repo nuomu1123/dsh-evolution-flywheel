@@ -221,9 +221,16 @@ export function registerMemoryRecall(ctx: MemoryRecallContext, store: MemoryStor
         return decision
       }
 
-      const lines = matches.map(item => `- 错误：${item.errorSignature ?? '未命名错误'}\n  历史解决方案：${item.resolution}`)
+      // 区分「已验证」与「模型推测」：把猜测标成「请优先参考」会误导判断。
+      const verified = matches.filter(item => item.resolutionSource === 'verified')
+      const inferred = matches.filter(item => item.resolutionSource !== 'verified')
+      const lines = [
+        ...verified.map(item => `- 错误：${item.errorSignature ?? '未命名错误'}\n  已验证解法：${item.resolution}`),
+        ...inferred.map(item => `- 错误：${item.errorSignature ?? '未命名错误'}\n  未验证推测：${item.resolution}`),
+      ]
       const notice = [
-        '系统检测到相似错误，历史解决方案如下，请优先参考。',
+        ...(verified.length === 0 ? [] : ['系统检测到相似错误，以下解法已被人类或探针验证，请优先参考。']),
+        ...(inferred.length === 0 ? [] : ['以下为模型推测的解法，尚未验证，仅供参考。']),
         lines.join('\n'),
         '如果当前错误不同，请以当前环境为准。',
       ].join('\n')

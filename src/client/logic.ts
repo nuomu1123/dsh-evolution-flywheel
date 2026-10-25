@@ -68,6 +68,10 @@ export interface MemoryItem {
   answer?: string
   answeredAt?: string
   probeSource?: string
+  /** 证据包 JSON：探针提问所依据的结构化上下文。 */
+  probeContext?: string
+  /** 对话线程 JSON：[{role,text,at}]，支持多轮追问。 */
+  probeThread?: string
 }
 
 export interface TimelineNode {
@@ -107,6 +111,7 @@ export function originLabel(origin?: string): string {
   if (origin === 'strategy-merge') return '策略融合'
   if (origin === 'curation') return '整理 Agent'
   if (origin === 'probe') return '认知探针'
+  if (origin === 'browser-observer') return '浏览器动作'
   if (origin === 'manual') return '手动记录'
   return '本地记忆'
 }
@@ -128,20 +133,24 @@ export function isMetaItem(item: MemoryItem): boolean {
 }
 
 export function normalizeMemoryStatus(status: unknown): MemoryItem['status'] {
+  // 返回值也要 trim：下游按精确值比较状态，带空白的 'approved ' 会全部失配（F3）。
   return typeof status === 'string' && status.trim() !== ''
-    ? status as MemoryItem['status']
+    ? status.trim() as MemoryItem['status']
     : 'suggested'
 }
 
 /** 由现有持久化字段还原四段式对抗时间轴；缺失字段如实标注，不虚构。 */
 export function buildTimeline(item: MemoryItem): TimelineNode[] {
-  const hasDebate = item.debateSummary !== undefined || item.challenge !== undefined
+  // 与 hasDebateRecord 同源：非空 debateRounds 也算进入过辩论（F1），
+  // 否则会出现「时间轴说没辩论、下方气泡在吵架」的自相矛盾。
+  const hasRounds = item.debateRounds !== undefined && item.debateRounds.length > 0
+  const hasDebate = hasRounds || item.debateSummary !== undefined || item.challenge !== undefined
   const submitted = item.errorSignature !== undefined
     ? `错误：${item.errorSignature}${item.context !== undefined ? `\n上下文：${item.context}` : ''}`
     : item.content
   const review = item.reviewReason ?? (hasDebate ? '驳回理由未记录' : '初审通过，未进入辩论')
   const challenge = item.challenge ?? (hasDebate
-    ? `本轮反驳未单独记录，以下为辩论摘要：\n${item.debateSummary ?? '（空）'}`
+    ? `本轮反驳未单独记录，以下为辩论摘要：\n${item.debateSummary ?? (hasRounds ? '（逐轮记录见下方辩论对话）' : '（空）')}`
     : '未进入辩论')
   const verdict = item.status === 'human_intervention'
     ? '等待人类圣裁'
@@ -166,7 +175,8 @@ export function buildTimeline(item: MemoryItem): TimelineNode[] {
 }
 
 export function hasDebateRecord(item: MemoryItem): boolean {
-  return item.debateRounds !== undefined
+  // 空数组不算记录：buildDebateBubbles 对同一输入返回 []，两处必须同源（F2）。
+  return (item.debateRounds !== undefined && item.debateRounds.length > 0)
     || item.challenge !== undefined
     || item.debateSummary !== undefined
     || item.status === 'debating'

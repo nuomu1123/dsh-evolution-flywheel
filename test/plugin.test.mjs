@@ -89,13 +89,17 @@ test('apply 注册 memory_ping、memory_list、memory_delete 与 /clarify 命令
   const { ctx, registered, commands, routes, listeners } = createMockContext()
   apply(ctx)
 
-  assert.equal(registered.length, 7)
+  // 契约变更（2026-10-25 真实使用反馈 P1-3）：新增 memory_remember，
+  // 用于把「对话中得出的结论」主动写进记忆——错误捕获只覆盖工具失败，
+  // 「禁用插件必须重启」这类平台知识靠它才能入库。
+  assert.equal(registered.length, 8)
   assert.deepEqual(registered.map(definition => definition.name).sort(), [
     'memory_approve',
     'memory_delete',
     'memory_list',
     'memory_ping',
     'memory_probe',
+    'memory_remember',
     'memory_search',
     'memory_update_resolution',
   ])
@@ -104,9 +108,13 @@ test('apply 注册 memory_ping、memory_list、memory_delete 与 /clarify 命令
   assert.equal(typeof commands[0].handler, 'function')
   assert.equal(routes.length, 1)
   assert.equal(routes[0].path, '/memory-explorer')
+  // 契约变更（2026-10-24 P1）：第三个 session/event 监听器来自 browser-observer，
+  // 负责把浏览器「不可逆动作」写进记忆。它和 memory-extractor、skill-extractor 共用
+  // 同一条宿主事件流，属于预期新增；若这里变成 4 个，请先确认新增监听器的用途。
   assert.deepEqual(listeners.map(listener => listener.event).sort(), [
     'agent/error',
     'agent/pre-step',
+    'session/event',
     'session/event',
     'session/event',
   ])
@@ -138,11 +146,14 @@ test('effect disposer 会注销工具、命令与 HTTP 路由', () => {
     'event:agent/pre-step',
     'event:session/event',
     'event:session/event',
+    // browser-observer（P1，浏览器不可逆动作入记忆）新增的第三个监听器。
+    'event:session/event',
     'memory_approve',
     'memory_delete',
     'memory_list',
     'memory_ping',
     'memory_probe',
+    'memory_remember',
     'memory_search',
     'memory_update_resolution',
     'route:/memory-explorer',
@@ -167,7 +178,7 @@ test('命令注册失败只写 stderr，记忆工具仍可用', () => {
 
   assert.equal(calls.length, 1)
   assert.match(String(calls[0][0]), /clarify command registration failed/)
-  assert.equal(registered.length, 7)
+  assert.equal(registered.length, 8)
 })
 
 test('成功加载不会自动调用审计日志', () => {

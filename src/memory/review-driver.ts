@@ -54,6 +54,8 @@ export async function complete(
   try {
     let text = ''
     let tokensUsed = 0
+    let reasoningChars = 0
+    let finishKind = 'unknown'
     for await (const chunk of llm.stream({
       provider,
       model,
@@ -67,9 +69,14 @@ export async function complete(
         const record = chunk as {
           type?: string
           text?: string
+          reason?: { kind?: string }
           usage?: { totalTokens?: number; inputTokens?: number; outputTokens?: number }
         }
         if (record.type === 'text-delta' && typeof record.text === 'string') text += record.text
+        // 思考型模型会先吐 reasoning-delta；这段不进入正文，但要计数，
+        // 否则「思考吃光 token、正文为空」会表现为一个无法解释的静默失败。
+        if (record.type === 'reasoning-delta' && typeof record.text === 'string') reasoningChars += record.text.length
+        if (record.type === 'finish') finishKind = String(record.reason?.kind ?? 'unknown')
         if (record.type === 'usage' && record.usage !== undefined) {
           tokensUsed = record.usage.totalTokens
             ?? (record.usage.inputTokens ?? 0) + (record.usage.outputTokens ?? 0)
@@ -77,7 +84,18 @@ export async function complete(
       }
       if (text.length > 4000) break
     }
-    return { text: text.trim(), tokensUsed: Math.max(0, Math.trunc(tokensUsed)) }
+    const trimmed = text.trim()
+    // 空正文必须抛错，否则会静默返回空串，最终表现为一个无法诊断的
+    // 「LLM 未返回 JSON」（2026-10-25 实测：25 条记录卡在这里）。
+    // 有 reasoning 说明额度被思考吃光；没有 reasoning 说明模型这轮就是没输出正文。
+    if (trimmed === '') {
+      throw new Error(
+        reasoningChars > 0
+          ? `模型把 maxTokens=${maxTokens} 全用在思考上（思考 ${reasoningChars} 字，结束原因 ${finishKind}），未输出正文`
+          : `模型返回空正文（结束原因 ${finishKind}，maxTokens=${maxTokens}），未输出正文`,
+      )
+    }
+    return { text: trimmed, tokensUsed: Math.max(0, Math.trunc(tokensUsed)) }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     console.error('[dsh-evolution-flywheel] review LLM stream failed:', error)
@@ -91,7 +109,10 @@ function parseJson(text: string): Record<string, unknown> {
   const cleaned = text.replace(/```json/giu, '').replace(/```/gu, '').trim()
   const start = cleaned.indexOf('{')
   const end = cleaned.lastIndexOf('}')
-  if (start < 0 || end <= start) throw new Error('LLM 未返回 JSON')
+  // 带上输出片段：否则「未返回 JSON」无法区分是空输出、纯文字、还是被截断。
+  const excerpt = cleaned.slice(0, 200).replace(/\s+/gu, ' ')
+  if (start < 0) throw new Error(`LLM 未返回 JSON（输出里没有 {，前 200 字：${excerpt}）`)
+  if (end <= start) throw new Error(`LLM 的 JSON 不完整（可能被截断，前 200 字：${excerpt}）`)
   const value: unknown = JSON.parse(cleaned.slice(start, end + 1))
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('LLM JSON 不是对象')
   return value as Record<string, unknown>

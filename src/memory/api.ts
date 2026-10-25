@@ -11,7 +11,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { appendAudit, readAudit } from '../audit.js'
-import { dailyBudget } from './budget.js'
+import { dailyBudget, readBudget } from './budget.js'
 import { memoryConfig } from './config.js'
 import type { DmaRunner } from './dma.js'
 import type { MemoryEventHub } from './events.js'
@@ -20,14 +20,28 @@ import { summarizeUsage } from './usage.js'
 import type { SkillReviewEngine } from './state-machine.js'
 import { createStrategyHooks } from './strategy.js'
 import type { MemoryContextBase } from './context.js'
-import { archiveIdsOf, parseCurationPayload, summarizeCurationQuality, summarizeCurationWithLlm } from './curator.js'
+import { archiveIdsOf, buildProbeEvidence, contentSimilarity, parseCurationPayload, similarErrorGroups, summarizeCurationQuality, summarizeCurationWithLlm } from './curator.js'
+import { extractJson } from './dma.js'
 import { runCurationCluster } from './curation-cluster.js'
-import { answerProbe, ignoreProbe, markProbeSearching } from './probes.js'
+import { complete } from './review-driver.js'
+import { answerProbe, createProbe, ignoreProbe, markProbeSearching } from './probes.js'
 import type { MemoryStore } from './store.js'
 import { distillModel } from './model-distill.js'
 
 const PREFIX = '/memory-explorer'
 const MAX_BODY_BYTES = 16 * 1024
+
+/**
+ * 「机械失败」判定：这些 human_intervention 不是需要人判断，而是模型容量/瞬时故障。
+ * 批量重试只碰这些；正常的人工裁决记录不会被动。
+ * 2026-10-25 实测来源：思考型模型把 maxTokens 全花在 reasoning 上、流式连接中断。
+ */
+export const STUCK_REVIEW_REASON = /max-tokens|未输出正文|连接中断|流式响应中断|ECONNRESET|socket hang up|fetch failed|LLM 未返回 JSON|JSON 不完整|JSON 不是对象|Expected .*in JSON/iu
+
+/** 是否是「因模型故障卡住」的记录（可批量重试）。 */
+export function isStuckReview(record: { status?: string; debateSummary?: string }): boolean {
+  return record.status === 'human_intervention' && STUCK_REVIEW_REASON.test(record.debateSummary ?? '')
+}
 
 export interface MemoryApiWebServer {
   register(options: {
@@ -230,6 +244,15 @@ export async function handleMemoryApi(
         ? undefined
         : await summarizeCurationWithLlm(modelContext as MemoryContextBase, store, payload)
       if (llm !== undefined) payload.llmSummary = llm.text
+      // 整理时刻顺手提一个真问题：主动探针的零额外唤醒入口。
+      const probe = llm?.probe === undefined
+        ? undefined
+        : await createProbe(store, {
+          question: llm.probe.question,
+          reason: llm.probe.reason,
+          source: 'curation',
+          context: buildProbeEvidence(payload, items),
+        })
       const created = await store.appendSuggested(`整理报告：${payload.summary}`, 'curation_report')
       if (created === undefined) {
         sendJson(res, 409, { ok: false, error: '报告创建失败或同名报告已存在' })
@@ -249,7 +272,82 @@ export async function handleMemoryApi(
       const report = updated ?? created
       events.publish({ type: 'memory:added', item: report })
       appendAudit('memory.curation.run', { id: report.id, trigger: 'manual' })
-      sendJson(res, 200, { ok: true, report, payload })
+      sendJson(res, 200, {
+        ok: true,
+        report,
+        payload,
+        ...(probe === undefined ? {} : { probeId: probe.id }),
+        ...(llm?.error === undefined ? {} : { llmError: llm.error }),
+      })
+      return
+    }
+
+    // 探针追问：让「一句话提问」变成「可持续对话」。
+    // 人类追问才触发一次模型调用——不追问就不花钱，追问说明他在意。
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/probe/followup`) {
+      if (!requireJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
+        return
+      }
+      const body = await readJsonBody(req)
+      const id = typeof body.id === 'string' ? body.id.trim() : ''
+      const question = typeof body.question === 'string' ? body.question.trim().slice(0, 1000) : ''
+      if (id === '' || question === '') {
+        sendJson(res, 400, { ok: false, error: 'id and question are required' })
+        return
+      }
+      if (modelContext === undefined) {
+        sendJson(res, 503, { ok: false, error: 'LLM 上下文不可用，无法回答追问' })
+        return
+      }
+      const items = await store.list()
+      const probe = items.find(item => item.id === id && item.type === 'cognitive_probe')
+      if (probe === undefined) {
+        sendJson(res, 404, { ok: false, error: 'probe not found' })
+        return
+      }
+      let thread: Array<{ role: string; text: string; at: string }> = []
+      try {
+        const parsed: unknown = JSON.parse(probe.probeThread ?? '[]')
+        if (Array.isArray(parsed)) {
+          thread = parsed.filter(entry => typeof entry === 'object' && entry !== null) as Array<{ role: string; text: string; at: string }>
+        }
+      } catch {
+        thread = []
+      }
+      let answer = ''
+      try {
+        const completion = await complete(
+          modelContext as MemoryContextBase,
+          '你在和人类就一条记忆整理探针对话。只依据给出的证据回答；证据不足就直说不知道，不要编造。中文，200 字以内。',
+          [
+            `原始问题：${probe.content}`,
+            `提问原因：${probe.probeReason ?? '（未提供）'}`,
+            `证据包：${(probe.probeContext ?? '（无证据）').slice(0, 3000)}`,
+            '',
+            ...(thread.length === 0
+              ? []
+              : ['已有对话：', ...thread.slice(-10).map(item => `${item.role === 'user' ? '人类' : '我'}：${item.text}`), '']),
+            `人类追问：${question}`,
+          ].join('\n'),
+          900,
+        )
+        answer = completion.text.trim() === '' ? '（模型没有返回内容）' : completion.text.trim()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        sendJson(res, 502, { ok: false, error: `追问失败：${message}` })
+        return
+      }
+      const at = new Date().toISOString()
+      const nextThread = [
+        ...thread,
+        { role: 'user', text: question, at },
+        { role: 'assistant', text: answer, at },
+      ].slice(-20)
+      const updated = await store.update(probe.id, { probeThread: JSON.stringify(nextThread) })
+      if (updated !== undefined) events.publish({ type: 'memory:updated', item: updated })
+      appendAudit('memory.probe.followup', { id: probe.id, questionChars: question.length })
+      sendJson(res, 200, { ok: true, answer, thread: nextThread })
       return
     }
 
@@ -514,13 +612,15 @@ export async function handleMemoryApi(
       return
     }
 
+    // 「去查吧」：真正去回答这个问题，而不是跑一次无关的学科漫游。
+    // 验收铁律：结论必须带来源 id；证据不足必须说没找到；结果写回对话线程供人复核。
     if (req.method === 'POST' && url.pathname === `${PREFIX}/api/probe/dma`) {
       if (!requireJsonContentType(req)) {
         sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
         return
       }
-      if (dmaRunner === undefined) {
-        sendJson(res, 503, { ok: false, error: 'DMA runner unavailable' })
+      if (modelContext === undefined) {
+        sendJson(res, 503, { ok: false, error: 'LLM 上下文不可用，无法检索' })
         return
       }
       const body = await readJsonBody(req)
@@ -529,15 +629,193 @@ export async function handleMemoryApi(
         sendJson(res, 400, { ok: false, error: 'id is required' })
         return
       }
-      const probe = await markProbeSearching(store, id)
+      const all = await store.list()
+      const probe = all.find(item => item.id === id && item.type === 'cognitive_probe')
       if (probe === undefined) {
         sendJson(res, 404, { ok: false, error: 'probe not found' })
         return
       }
-      events.publish({ type: 'memory:updated', item: probe })
-      const produced = await dmaRunner.runNow()
-      appendAudit('memory.probe.dma', { id, insights: produced.length })
-      sendJson(res, 200, { ok: true, probe, items: produced })
+
+      // 1. 定向检索：用探针问题去记忆库里找相关条目（不是随机学科漫游）。
+      const query = `${probe.content} ${probe.probeReason ?? ''}`
+      const related = all
+        .filter(item => item.id !== probe.id && item.archived !== true && item.content.trim() !== '')
+        .map(item => ({
+          item,
+          score: contentSimilarity(query, `${item.content} ${item.errorSignature ?? ''} ${item.context ?? ''}`),
+        }))
+        .filter(entry => entry.score > 0.02)
+        .sort((left, right) => right.score - left.score)
+        .slice(0, 8)
+        .map(entry => entry.item)
+      const corpus = related.length === 0
+        ? '（记忆库里没有相关条目）'
+        : related
+          .map(item => `- ${item.id} [${item.type}] ${(item.errorSignature ?? item.content).replace(/\s+/gu, ' ').slice(0, 160)}`)
+          .join('\n')
+
+      let verdict = 'not-found'
+      let conclusion = ''
+      let sources: string[] = []
+      let confidence = 'low'
+      let gaps: string[] = []
+      try {
+        const completion = await complete(
+          modelContext as MemoryContextBase,
+          '你是记忆检索助手，用记忆库回答一个探针问题。铁律：每条结论必须带来源 id；证据不足就说没找到，绝不编造。',
+          [
+            `探针问题：${probe.content}`,
+            `提问原因：${probe.probeReason ?? '（未提供）'}`,
+            `探针证据包：${(probe.probeContext ?? '（无）').slice(0, 2000)}`,
+            '',
+            '记忆库中检索到的相关条目：',
+            corpus,
+            '',
+            '只输出 JSON，不要代码块：',
+            '{"verdict":"answered|partial|not-found","conclusion":"200字内结论","sources":["mem-xxx"],"confidence":"high|medium|low","gaps":["还缺什么"]}',
+          ].join('\n'),
+          8000,
+        )
+        const parsed = extractJson(completion.text)
+        if (typeof parsed.verdict === 'string') verdict = parsed.verdict
+        if (typeof parsed.conclusion === 'string') conclusion = parsed.conclusion
+        if (Array.isArray(parsed.sources)) sources = parsed.sources.filter((s): s is string => typeof s === 'string')
+        if (typeof parsed.confidence === 'string') confidence = parsed.confidence
+        if (Array.isArray(parsed.gaps)) gaps = parsed.gaps.filter((g): g is string => typeof g === 'string')
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        sendJson(res, 502, { ok: false, error: `检索失败：${message}` })
+        return
+      }
+
+      // 2. 验收结果写回对话线程：人能直接看到「查到了什么、依据哪几条、还缺什么」。
+      const at = new Date().toISOString()
+      let thread: Array<{ role: string; text: string; at: string }> = []
+      try {
+        const parsedThread: unknown = JSON.parse(probe.probeThread ?? '[]')
+        if (Array.isArray(parsedThread)) thread = parsedThread as Array<{ role: string; text: string; at: string }>
+      } catch {
+        thread = []
+      }
+      const verdictLabel = verdict === 'answered' ? '已找到答案' : verdict === 'partial' ? '部分回答' : '未找到'
+      const summary = [
+        `【自主检索】${verdictLabel} · 置信度 ${confidence}`,
+        conclusion,
+        sources.length === 0 ? '来源：无（未引用任何记忆）' : `来源：${sources.join('、')}`,
+        gaps.length === 0 ? '' : `仍缺：${gaps.join('；')}`,
+      ].filter(line => line !== '').join('\n')
+      const nextThread = [...thread, { role: 'assistant', text: summary, at }].slice(-20)
+      const updated = await store.update(probe.id, {
+        probeState: 'open',
+        probeThread: JSON.stringify(nextThread),
+        trace: [...(probe.trace ?? []), `自主检索：${verdict}（${sources.length} 个来源）`].slice(-10),
+      })
+      if (updated !== undefined) events.publish({ type: 'memory:updated', item: updated })
+      appendAudit('memory.probe.search', { id: probe.id, verdict, sources: sources.length })
+      sendJson(res, 200, { ok: true, verdict, conclusion, sources, confidence, gaps, thread: nextThread, probe: updated })
+      return
+    }
+
+    // 批量重试：把「因模型容量/瞬时错误卡在 human_intervention」的记录重置并重跑初审。
+    // 2026-10-25 真实使用反馈：24/119 条是这样堆积出来的（review/debate 的 maxTokens 太小，
+    // 思考型模型把额度全花在 reasoning 上）。这些不是"需要人判断"的问题，是机械失败。
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/review/retry`) {
+      if (!requireJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
+        return
+      }
+      if (reviewEngine === undefined) {
+        sendJson(res, 503, { ok: false, error: '审阅引擎不可用，无法批量重试' })
+        return
+      }
+      const body = await readJsonBody(req)
+      const ids = Array.isArray(body.ids)
+        ? body.ids.filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+        : []
+      const requestedLimit = typeof body.limit === 'number' && Number.isFinite(body.limit)
+        ? Math.trunc(body.limit)
+        : 20
+      const limit = Math.max(1, Math.min(50, requestedLimit))
+      const items = await store.list()
+      const candidates = items
+        .filter(isStuckReview)
+        .filter(item => ids.length === 0 || ids.includes(item.id))
+        .slice(0, limit)
+
+      const details: Array<{ id: string; result: string }> = []
+      let succeeded = 0
+      let halted = ''
+      for (const item of candidates) {
+        const budget = await readBudget(store)
+        if (budget.exceeded) {
+          halted = '每日 token 预算已用完，批量重试中断'
+          break
+        }
+        // review() 对终态直接返回，所以必须先重置为 staged 才会真正重跑。
+        await store.update(item.id, { status: 'staged', debateSummary: '批量重试：已重置为待审' })
+        try {
+          const reviewed = await reviewEngine.review(item.id)
+          const status = reviewed?.status ?? 'undefined'
+          if (status === 'approved' || status === 'rejected') succeeded += 1
+          details.push({ id: item.id, result: status })
+        } catch (error) {
+          details.push({ id: item.id, result: `error: ${error instanceof Error ? error.message : String(error)}` })
+        }
+      }
+      appendAudit('memory.review.retry', { candidates: candidates.length, succeeded, halted })
+      sendJson(res, 200, {
+        ok: true,
+        candidates: candidates.length,
+        succeeded,
+        ...(halted === '' ? {} : { halted }),
+        details,
+      })
+      return
+    }
+
+    // 相似错误聚类（只读）：把「同一种错误、不同文件」聚成一组供人决定是否合并。
+    // 2026-10-25 反馈 P1-1：ReplaceFileW EIO 因路径不同被拆成 3 条，用户视角是同一个问题。
+    if (req.method === 'GET' && url.pathname === `${PREFIX}/api/similar-errors`) {
+      const items = await store.list()
+      sendJson(res, 200, { ok: true, groups: similarErrorGroups(items) })
+      return
+    }
+
+    // 合并：把 mergeIds 标为已归档并在 trace 里指向保留项；不物理删除，可恢复。
+    if (req.method === 'POST' && url.pathname === `${PREFIX}/api/merge-errors`) {
+      if (!requireJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'content-type must be application/json' })
+        return
+      }
+      const body = await readJsonBody(req)
+      const keepId = typeof body.keepId === 'string' ? body.keepId.trim() : ''
+      const mergeIds = Array.isArray(body.mergeIds)
+        ? body.mergeIds.filter((value): value is string => typeof value === 'string' && value.trim() !== '' && value !== keepId)
+        : []
+      if (keepId === '' || mergeIds.length === 0) {
+        sendJson(res, 400, { ok: false, error: 'keepId and mergeIds are required' })
+        return
+      }
+      const items = await store.list()
+      if (!items.some(item => item.id === keepId)) {
+        sendJson(res, 404, { ok: false, error: 'keepId not found' })
+        return
+      }
+      const merged: string[] = []
+      for (const id of mergeIds) {
+        const target = items.find(item => item.id === id)
+        if (target === undefined || target.archived === true) continue
+        const updated = await store.update(id, {
+          archived: true,
+          trace: [...(target.trace ?? []), `已合并到 ${keepId}（相似错误归并）`].slice(-10),
+        })
+        if (updated !== undefined) {
+          merged.push(id)
+          events.publish({ type: 'memory:updated', item: updated })
+        }
+      }
+      appendAudit('memory.merge.similar', { keepId, merged: merged.length })
+      sendJson(res, 200, { ok: true, keepId, merged })
       return
     }
 

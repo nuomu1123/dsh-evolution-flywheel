@@ -179,6 +179,8 @@ test('辩论不收敛进入 human_intervention，人类采纳后 approved', asyn
     const adopted = await engine.humanDecide(item.id, 'adopt')
     assert.equal(adopted?.status, 'approved')
     assert.equal(adopted?.humanDecision, 'adopt')
+    // 人类采纳 = 解法被验证过（P0-2）
+    assert.equal(adopted?.resolutionSource, 'verified')
   })
 })
 
@@ -334,4 +336,85 @@ test('离线 DMA 只追加 speculative，且外部文本被消毒', async () => 
     assert.doesNotMatch(item.content, /忽略之前所有指令/)
     assert.equal((await store.list()).length, before + 1)
   })
+})
+
+// ---------------------------------------------------------------------------
+// 模型容量失败的降级策略（2026-10-25 真实使用反馈后补）：
+// 思考型模型把 maxTokens 全花在 reasoning 上时，旧逻辑会直接 human_intervention，
+// 导致 24/119 条记录堆积。现在：可重试错误重试一次，仍失败才升级人工。
+// ---------------------------------------------------------------------------
+
+test('初审遇到 token 饿死会重试一次并成功，不升级人工', async () => {
+  await withStore(async store => {
+    const item = await createSkill(store, 'retry-ok')
+    let calls = 0
+    const engine = new SkillReviewEngine(store, { publish() {} }, {
+      async review() {
+        calls += 1
+        if (calls === 1) {
+          throw new Error('模型把 maxTokens=500 全用在思考上（思考 1985 字，结束原因 max-tokens），未输出正文')
+        }
+        return { decision: 'approve', reason: '重试后拿到正文' }
+      },
+      async debate() {
+        throw new Error('不应进入辩论')
+      },
+    })
+    const result = await engine.review(item.id)
+    assert.equal(calls, 2, '应重试一次')
+    assert.equal(result?.status, 'approved')
+  })
+})
+
+test('不可重试的错误（鉴权/配置）直接升级人工，不浪费一次重试', async () => {
+  await withStore(async store => {
+    const item = await createSkill(store, 'retry-no')
+    let calls = 0
+    const engine = new SkillReviewEngine(store, { publish() {} }, {
+      async review() {
+        calls += 1
+        throw new Error('unauthorized: invalid api key')
+      },
+      async debate() {
+        throw new Error('不应进入辩论')
+      },
+    })
+    const result = await engine.review(item.id)
+    assert.equal(calls, 1, '鉴权错误不应重试')
+    assert.equal(result?.status, 'human_intervention')
+    assert.doesNotMatch(result?.debateSummary ?? '', /已重试/)
+  })
+})
+
+test('可重试错误连续两次失败才升级人工，并标注已重试', async () => {
+  await withStore(async store => {
+    const item = await createSkill(store, 'retry-fail')
+    let calls = 0
+    const engine = new SkillReviewEngine(store, { publish() {} }, {
+      async review() {
+        calls += 1
+        throw new Error('流式响应中断：socket hang up')
+      },
+      async debate() {
+        throw new Error('不应进入辩论')
+      },
+    })
+    const result = await engine.review(item.id)
+    assert.equal(calls, 2, '应恰好重试一次')
+    assert.equal(result?.status, 'human_intervention')
+    assert.match(result?.debateSummary ?? '', /已重试/)
+  })
+})
+
+test('审阅/辩论的 token 预算已为思考型模型调大', async () => {
+  const { memoryConfig } = await import('../lib/memory/config.js')
+  // 环境变量可覆盖，因此只在未设置时断言默认值。
+  if (process.env.DSH_MEMORY_REVIEW_MAX_TOKENS === undefined) {
+    assert.equal(memoryConfig.reviewMaxTokens, 2000)
+  }
+  if (process.env.DSH_MEMORY_DEBATE_MAX_TOKENS === undefined) {
+    assert.equal(memoryConfig.debateMaxTokens, 2000)
+  }
+  assert.ok(memoryConfig.reviewMaxTokens >= 1000, '审阅额度不应低于 1000')
+  assert.ok(memoryConfig.debateMaxTokens >= 1000, '辩论额度不应低于 1000')
 })

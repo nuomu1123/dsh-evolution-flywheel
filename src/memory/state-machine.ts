@@ -17,6 +17,13 @@ const sanitize = (value: unknown, maxLength = 1000): string =>
 import type { DebateRound, MemoryRecord, MemoryStore } from './store.js'
 import type { StrategyHooks } from './strategy.js'
 
+/**
+ * 可重试的模型失败：思考型模型把额度吃光、流式连接中断。
+ * 这些是瞬时/容量问题，重试一次的成本远小于把记录永久钉进 human_intervention。
+ * 鉴权、配置、请求格式错误不可重试（重试只会重复失败）。
+ */
+const RETRYABLE_MODEL_ERROR = /max-tokens|未输出正文|连接中断|流式响应中断|ECONNRESET|socket hang up|fetch failed/iu
+
 export interface ReviewVerdict {
   decision: 'approve' | 'reject'
   reason: string
@@ -123,11 +130,25 @@ export class SkillReviewEngine {
       try {
         verdict = await this.driver.review(safeRecord, strategyText)
       } catch (error) {
-        return this.reflectAfter(
-          await this.humanIntervention(key, `初审失败：${this.errorText(error)}`),
-          task,
-          `初审失败：${this.errorText(error)}`,
-        )
+        const message = this.errorText(error)
+        // 容量/瞬时错误重试一次；仍失败才升级人工，避免一次饿死就永久堆积。
+        if (!RETRYABLE_MODEL_ERROR.test(message)) {
+          return this.reflectAfter(
+            await this.humanIntervention(key, `初审失败：${message}`),
+            task,
+            `初审失败：${message}`,
+          )
+        }
+        try {
+          verdict = await this.driver.review(safeRecord, strategyText)
+        } catch (retryError) {
+          const retryMessage = this.errorText(retryError)
+          return this.reflectAfter(
+            await this.humanIntervention(key, `初审失败（已重试）：${retryMessage}`),
+            task,
+            `初审失败（已重试）：${retryMessage}`,
+          )
+        }
       }
 
       const reviewReason = sanitize(verdict.reason, 500)
@@ -166,11 +187,25 @@ export class SkillReviewEngine {
       try {
         debate = await this.driver.debate(safeRecord, review)
       } catch (error) {
-        return this.reflectAfter(
-          await this.humanIntervention(key, `辩论失败：${this.errorText(error)}`),
-          task,
-          `辩论失败：${this.errorText(error)}`,
-        )
+        const message = this.errorText(error)
+        if (!RETRYABLE_MODEL_ERROR.test(message)) {
+          return this.reflectAfter(
+            await this.humanIntervention(key, `辩论失败：${message}`),
+            task,
+            `辩论失败：${message}`,
+          )
+        }
+        // 同样的容量/瞬时错误策略：重试一次再升级人工。
+        try {
+          debate = await this.driver.debate(safeRecord, review)
+        } catch (retryError) {
+          const retryMessage = this.errorText(retryError)
+          return this.reflectAfter(
+            await this.humanIntervention(key, `辩论失败（已重试）：${retryMessage}`),
+            task,
+            `辩论失败（已重试）：${retryMessage}`,
+          )
+        }
       }
 
       const debateSummary = sanitize(debate.summary ?? '', 800)
@@ -262,6 +297,10 @@ export class SkillReviewEngine {
     return this.patch(key, {
       status: decision === 'adopt' ? 'approved' : 'rejected',
       humanDecision: decision,
+      // 人类采纳 = 这条解法被验证过；recall 才能放心说「请优先参考」。
+      ...(decision === 'adopt' && typeof record.resolution === 'string' && record.resolution.trim() !== ''
+        ? { resolutionSource: 'verified' as const }
+        : {}),
     })
   }
 

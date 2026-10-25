@@ -142,8 +142,11 @@ export async function distillModel(
     let budgetExceeded = false
     try {
       budgetExceeded = (await readBudget(store)).exceeded
-    } catch {
-      // 预算读取失败不阻塞已经生成的模型。
+    } catch (error) {
+      // fail-closed：预算读不出来时按"已超预算"处理。宁可少做一次策略反思，
+      // 也不在成本护栏失效的窗口里继续调用 LLM。
+      budgetExceeded = true
+      console.error('[dsh-evolution-flywheel] 预算读取失败，本次跳过策略反思（fail-closed）：', error)
     }
     if (!budgetExceeded) {
       const disciplines = [...new Set(seeds.map(item => item.discipline).filter((value): value is string => value !== undefined))]

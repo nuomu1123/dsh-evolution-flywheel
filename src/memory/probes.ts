@@ -9,13 +9,15 @@ import type { MemoryContextBase } from './context.js'
 import type { MemoryEventHub } from './events.js'
 import type { MemoryRecord, MemoryStore } from './store.js'
 
-export type ProbeSource = 'model-distill' | 'dma' | 'manual'
+export type ProbeSource = 'model-distill' | 'dma' | 'manual' | 'curation'
 
 export interface ProbeInput {
   question: string
   reason: string
   source: ProbeSource
   sourceId?: string
+  /** 证据包：本次提问所依据的结构化上下文，随探针落库，供人展开判断。 */
+  context?: unknown
 }
 
 /** 创建一条待人类回答的探针；同名且未跳过的探针不重复创建。 */
@@ -33,16 +35,24 @@ export async function createProbe(
   if (existing !== undefined) return existing
   const created = await store.appendSuggested(question, 'cognitive_probe')
   if (created === undefined) return undefined
+  const contextJson = input.context === undefined
+    ? undefined
+    : JSON.stringify(input.context).slice(0, 4000)
   return store.update(created.id, {
-    probeReason: input.reason.slice(0, 500),
+    // 调用方可能传来空原因（模型没给）：必须留一句可读的说明，否则界面上是空白。
+    probeReason: input.reason.trim() === ''
+      ? `由 ${input.source} 生成的待确认问题（未提供原因）`
+      : input.reason.trim().slice(0, 500),
     probeState: 'open',
     probeSource: input.source,
+    ...(contextJson === undefined ? {} : { probeContext: contextJson }),
     origin: 'probe',
     originDetail: input.source,
     trace: [
       `来源：${input.source}`,
       ...(input.sourceId === undefined ? [] : [`来源记忆：${input.sourceId}`]),
       `原因：${input.reason.slice(0, 200)}`,
+      ...(input.context === undefined ? [] : ['已附带证据包']),
     ],
   })
 }

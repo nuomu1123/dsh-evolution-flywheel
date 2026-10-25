@@ -17,6 +17,8 @@ import {
   memoryDeleteTool,
   memoryListTool,
   memoryUpdateResolutionTool,
+  memoryRememberTool,
+  memoryProbeTool,
 } from '../lib/memory/tools.js'
 
 async function withStore(fn) {
@@ -736,7 +738,8 @@ test('有 systemPrompt 时召回写入系统上下文而不是 user 消息', asy
     assert.equal(decision.kind, 'enter')
     assert.equal(decision.messages.length, 1)
     const systemText = skillDefinition.text({ agent })
-    assert.match(systemText, /系统检测到相似错误，历史解决方案如下，请优先参考/)
+    // 文案契约变更（P0-2）：默认 resolution 是模型推测，措辞必须如实说明。
+    assert.match(systemText, /以下为模型推测的解法，尚未验证，仅供参考/)
     assert.match(systemText, /pip install requests/)
   })
 })
@@ -822,4 +825,352 @@ test('记忆可持久化来源与提炼过程', async () => {
     assert.equal(found?.originDetail, '生物学')
     assert.deepEqual(found?.trace, ['学科：生物学', '来源：example.org'])
   })
+})
+
+// ---------------------------------------------------------------------------
+// resolution 附着边界（2026-10-24 实测污染后补）：
+// 一条长汇报只因含「修复」二字就被写进最近失败记忆的 resolution，面板变成汇报正文。
+// ---------------------------------------------------------------------------
+
+function createSkillHarness(store) {
+  const handlers = {}
+  const ctx = {
+    effect(callback) {
+      return callback()
+    },
+    on(event, listener) {
+      handlers[event] = listener
+      return () => {}
+    },
+  }
+  registerSkillExtraction(ctx, store, { publish() {} })
+  return handlers
+}
+
+async function seedFailure(handlers, session, callId, text) {
+  handlers['session/event']({ id: session }, {
+    type: 'tool/call',
+    data: { callId, name: 'bash', arguments: '{"command":"npm test"}' },
+  })
+  handlers['session/event']({ id: session }, {
+    type: 'tool/result',
+    data: {
+      message: {
+        toolCallId: callId,
+        isError: true,
+        content: [{ type: 'text', text }],
+      },
+    },
+  })
+  // capture 是异步写库，等它落盘后再发 assistant/message。
+  await new Promise(resolve => setTimeout(resolve, 50))
+}
+
+test('长篇汇报不会被写进错误记忆的 resolution', async () => {
+  await withStore(async (store) => {
+    const handlers = createSkillHarness(store)
+    await seedFailure(handlers, 'session-report', 'call-r', 'Error: build failed')
+
+    const report = [
+      '已修复：构建失败。',
+      '',
+      '## 一、改动',
+      'x'.repeat(400),
+      '## 二、验证',
+      'y'.repeat(400),
+    ].join('\n')
+    handlers['session/event']({ id: 'session-report' }, {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: report }] } },
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    const skill = (await store.list()).find(item => item.type === 'skill_error_fix')
+    assert.ok(skill)
+    assert.equal(skill.resolution, undefined, '长篇汇报不应成为 resolution')
+  })
+})
+
+test('简短的排错说明仍会写进 resolution', async () => {
+  await withStore(async (store) => {
+    const handlers = createSkillHarness(store)
+    await seedFailure(handlers, 'session-short', 'call-s', 'Error: build failed')
+
+    handlers['session/event']({ id: 'session-short' }, {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '已修复：先执行 npm ci 再重跑即可。' }] } },
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    const skill = (await store.list()).find(item => item.type === 'skill_error_fix')
+    assert.ok(skill)
+    assert.match(skill.resolution ?? '', /npm ci/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 跨插件兼容（2026-10-24 审计）：DSH 自带的 compaction-tool-result-pruner
+// 在上下文压缩时会 append 一个剪枝后的 tool/result，内容带固定标记。
+// 它不是新失败，飞轮必须跳过，否则同一错误会被记成截断版第二条。
+// ---------------------------------------------------------------------------
+
+test('压缩剪枝后的 tool/result 不会被当成新错误重复记录', async () => {
+  await withStore(async (store) => {
+    const handlers = createSkillHarness(store)
+    await seedFailure(handlers, 'session-prune', 'call-p', 'Error: original failure')
+
+    const before = (await store.list()).filter(item => item.type === 'skill_error_fix').length
+    assert.equal(before, 1)
+
+    // 模拟 pruner 的替换事件：仍是 isError，但内容被截断并插入 PRUNE_MARKER。
+    handlers['session/event']({ id: 'session-prune' }, {
+      type: 'tool/result',
+      data: {
+        message: {
+          toolCallId: 'call-p',
+          isError: true,
+          content: [{
+            type: 'text',
+            text: 'Error: original\n\n[... tool result middle pruned ...]\n\ntail only',
+          }],
+        },
+      },
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    const after = (await store.list()).filter(item => item.type === 'skill_error_fix').length
+    assert.equal(after, before, '剪枝替换不应新增错误记录')
+  })
+})
+
+// 批量重试的筛选口径（2026-10-25 真实使用反馈后补）。
+// 只重试「因模型容量/瞬时故障卡住」的记录；真正需要人判断的收敛失败不碰。
+test('批量重试只挑因模型故障卡住的 human_intervention 记录', async () => {
+  const { isStuckReview } = await import('../lib/memory/api.js')
+  assert.equal(isStuckReview({
+    status: 'human_intervention',
+    debateSummary: '辩论失败：审阅模型连接中断，已安全停止：模型把 maxTokens=900 全用在思考上（思考 3191 字，结束原因 max-tokens），未输出正文',
+  }), true)
+  assert.equal(isStuckReview({ status: 'human_intervention', debateSummary: '初审失败：LLM 未返回 JSON' }), true)
+  // 辩论输出了 JSON 但格式不完整：同样属于模型故障，可重试
+  assert.equal(isStuckReview({ status: 'human_intervention', debateSummary: "辩论失败：Expected ',' or ']' after array element in JSON at position 42" }), true)
+  // 真正需要人判断的收敛失败：不应被批量重试碰
+  assert.equal(isStuckReview({ status: 'human_intervention', debateSummary: '双方无法收敛，需要人类判断风险' }), false)
+  // 非终态 / 无摘要
+  assert.equal(isStuckReview({ status: 'approved', debateSummary: 'max-tokens' }), false)
+  assert.equal(isStuckReview({ status: 'human_intervention' }), false)
+})
+
+// 审阅模型空正文的可诊断性（2026-10-25：25 条记录因「LLM 未返回 JSON」卡死，
+// 根因是空正文被静默返回、最终在 JSON 解析处报了一个无法定位的错误）。
+function fakeLlmCtx(chunks) {
+  return {
+    get(name) {
+      if (name !== 'llm') return undefined
+      return {
+        async listProviders() { return [{ id: 'p1' }] },
+        async listModels() { return [{ id: 'm1' }] },
+        async *stream() { for (const chunk of chunks) yield chunk },
+      }
+    },
+  }
+}
+
+test('模型返回空正文时抛出可诊断错误，而不是静默走到 JSON 解析失败', async () => {
+  const { complete } = await import('../lib/memory/review-driver.js')
+  await assert.rejects(
+    () => complete(fakeLlmCtx([{ type: 'finish', reason: { kind: 'max-tokens' } }]), 'sys', 'prompt'),
+    /未输出正文/,
+  )
+})
+
+test('空正文但有 reasoning 时明确指出是思考吃光额度', async () => {
+  const { complete } = await import('../lib/memory/review-driver.js')
+  await assert.rejects(
+    () => complete(fakeLlmCtx([
+      { type: 'reasoning-delta', text: '思考'.repeat(80) },
+      { type: 'finish', reason: { kind: 'max-tokens' } },
+    ]), 'sys', 'prompt'),
+    /全用在思考上/,
+  )
+})
+
+// memory_search 的类型过滤与相关性排序（2026-10-25 真实使用反馈后补）：
+// 旧实现按文件顺序返回、无类型过滤，搜「插件」有用率只有 1/10。
+test('memory_search 支持类型过滤，并按命中质量排序', async () => {
+  await withStore(async (store) => {
+    // 正文命中：高质量
+    const fact = await store.appendSuggested('插件启动失败的排查经验', 'fact')
+    // 只有上下文命中：低质量
+    const meta = await store.appendSuggested('某个元认知结论', 'meta_insight')
+    await store.update(meta.id, { context: '插件启动失败的排查经验' })
+    await store.appendSuggested('完全无关的内容', 'fact')
+
+    const all = await store.search('插件', 10)
+    assert.ok(all.length >= 2)
+    assert.equal(all[0].id, fact.id, '正文命中应排在只有上下文命中的前面')
+    assert.ok(!all.some(item => item.content.includes('无关')))
+
+    const onlyMeta = await store.search('插件', 10, { type: 'meta_insight' })
+    assert.equal(onlyMeta.length, 1)
+    assert.equal(onlyMeta[0].id, meta.id)
+
+    const onlyFact = await store.search('插件', 10, { type: 'fact' })
+    assert.ok(onlyFact.length >= 1)
+    assert.ok(onlyFact.every(item => item.type === 'fact'))
+    assert.ok(onlyFact.some(item => item.id === fact.id))
+  })
+})
+
+test('memory_search 默认排除已归档记录', async () => {
+  await withStore(async (store) => {
+    const item = await store.appendSuggested('归档标记测试样例', 'fact')
+    assert.ok(item)
+    await store.update(item.id, { archived: true })
+    assert.equal((await store.search('归档标记测试样例', 10)).length, 0)
+    assert.equal((await store.search('归档标记测试样例', 10, { includeArchived: true })).length, 1)
+  })
+})
+
+// 主动沉淀工具（2026-10-25 真实使用反馈的 P1-3）：错误捕获只覆盖工具失败，
+// 「禁用插件必须重启」这类平台行为知识必须能手动写进记忆。
+test('memory_remember 能沉淀结论，默认 suggested、可标记已验证、自动去重', async () => {
+  await withStore(async (store) => {
+    const tool = memoryRememberTool(store)
+    const out = await tool.execute({
+      content: '禁用带客户端半的插件后必须重启 DSH，刷新页面无效',
+      context: '实测：composer-pro 禁用后刷新仍加载旧客户端模块图',
+    })
+    assert.equal(out.ok, true)
+    assert.equal(out.item.type, 'fact')
+    assert.equal(out.item.status, 'suggested')
+    assert.equal(out.item.origin, 'manual')
+    assert.match(out.item.context ?? '', /刷新仍加载旧客户端模块图/)
+
+    // 完全相同的内容不重复写入
+    const again = await tool.execute({ content: '禁用带客户端半的插件后必须重启 DSH，刷新页面无效' })
+    assert.equal(again.ok, false)
+    assert.equal(again.reason, 'duplicate')
+
+    // 已验证的结论可以直接 approved
+    const verified = await tool.execute({ content: '另一条已验证的结论', approved: true })
+    assert.equal(verified.ok, true)
+    assert.equal(verified.item.status, 'approved')
+
+    // 写进去的能被搜到
+    const found = await store.search('刷新页面无效', 5)
+    assert.ok(found.some(item => item.content.includes('必须重启')))
+  })
+})
+
+// resolution 来源标记（2026-10-25 反馈 P0-2）：把「模型推测」和「已验证解法」分开，
+// 否则 recall 会把猜测标成「请优先参考」。
+test('错误捕获的 resolution 默认 inferred，探针验证后变 verified', async () => {
+  await withStore(async (store) => {
+    const result = await store.captureSkillError({
+      errorSignature: 'E: source-test',
+      context: '工具 bash 执行失败',
+      resolution: '先安装依赖再重试',
+      fingerprint: 'fp-source-1',
+    })
+    assert.ok(result)
+    assert.equal(result.item.resolutionSource, 'inferred')
+
+    const probe = memoryProbeTool(store)
+    const out = await probe.execute({
+      id: result.item.id,
+      hypothesis: '安装依赖后能否通过',
+      evidence: '复现后确认通过',
+      verified: true,
+    })
+    assert.equal(out.item.resolutionSource, 'verified')
+  })
+})
+
+test('memory_update_resolution 默认 inferred，verified=true 时标 verified', async () => {
+  await withStore(async (store) => {
+    const created = await store.appendSuggested('错误：样例错误', 'skill_error_fix')
+    assert.ok(created)
+    const tool = memoryUpdateResolutionTool(store)
+
+    const inferred = await tool.execute({ id: created.id, resolution: '试试重启服务' })
+    assert.equal(inferred.item.resolutionSource, 'inferred')
+
+    const verified = await tool.execute({ id: created.id, resolution: '重启后确认有效', verified: true })
+    assert.equal(verified.item.resolutionSource, 'verified')
+  })
+})
+
+// 探针原因兜底（2026-10-25 反馈 P2）：模型常输出空的【原因】，
+// 旧逻辑 `?? 默认值` 对「匹配到空串」不生效，界面上就是空白。
+test('整理探针的原因字段为空时会兜底为可读说明', async () => {
+  const { parseCurationProbe } = await import('../lib/memory/curator.js')
+  const probe = parseCurationProbe('【想问】这 4 条报错是否同源？\n【原因】')
+  assert.ok(probe)
+  assert.equal(probe.question, '这 4 条报错是否同源？')
+  assert.ok(probe.reason.length > 0, '原因不应为空')
+  assert.match(probe.reason, /整理记忆时产生的疑问/)
+})
+
+test('createProbe 对空原因给出可读说明，不留空白', async () => {
+  await withStore(async (store) => {
+    const { createProbe } = await import('../lib/memory/probes.js')
+    const item = await createProbe(store, { question: '为什么会有这条记忆？', reason: '', source: 'test' })
+    assert.ok(item)
+    assert.equal(item.type, 'cognitive_probe')
+    assert.ok((item.probeReason ?? '').length > 0, 'probeReason 不应为空')
+    assert.match(item.probeReason ?? '', /未提供原因/)
+  })
+})
+
+// 整理报告下钻（2026-10-25 反馈 P2）：只给「待裁决 N 条」没有可操作性，
+// 必须拆成「待确认 / 待审阅 / 等圣裁（模型故障 vs 真需判断）」。
+test('整理报告把待裁决拆成可行动的分布', async () => {
+  const { buildCurationReport } = await import('../lib/memory/curator.js')
+  const now = Date.now()
+  const iso = new Date(now).toISOString()
+  const items = [
+    { id: 'a', content: '一条待确认的事实', type: 'fact', status: 'suggested', createdAt: iso },
+    { id: 'b', content: '错误：X', type: 'skill_error_fix', status: 'human_intervention', createdAt: iso, debateSummary: '初审失败：LLM 未返回 JSON' },
+    { id: 'c', content: '错误：Y', type: 'skill_error_fix', status: 'human_intervention', createdAt: iso, debateSummary: '证据不足，转人工补证' },
+  ]
+  const report = buildCurationReport(items, now, 'manual')
+  const text = report.risks.join(' ')
+  assert.match(text, /待确认 1 条/)
+  assert.match(text, /等待人类圣裁|条等待人类圣裁/)
+  assert.match(text, /模型故障遗留/)
+  assert.match(text, /需要你亲自判断/)
+})
+
+// 相似错误聚类（2026-10-25 反馈 P1-1）：同一种错误、不同文件路径要能归到一组。
+test('相似错误聚类：同一种错误的不同文件路径会归到一组', async () => {
+  const { normalizeErrorSignature, similarErrorGroups } = await import('../lib/memory/curator.js')
+
+  const one = 'ToolError: Error: ReplaceFileW EIO (Win32 1175): D:\\a\\b.mjs'
+  const two = 'ToolError: Error: ReplaceFileW EIO (Win32 1175): D:\\c\\d.mjs'
+  assert.match(normalizeErrorSignature(one), /<path>/)
+  assert.equal(normalizeErrorSignature(one), normalizeErrorSignature(two), '路径与数字应被归一化')
+
+  const now = new Date().toISOString()
+  const items = [
+    { id: 'a', content: 'x', type: 'skill_error_fix', status: 'approved', createdAt: now, errorSignature: one },
+    { id: 'b', content: 'y', type: 'skill_error_fix', status: 'approved', createdAt: now, errorSignature: two },
+    { id: 'c', content: 'z', type: 'fact', status: 'approved', createdAt: now },
+    { id: 'd', content: 'w', type: 'skill_error_fix', status: 'approved', createdAt: now, errorSignature: '另一类完全不同的错误' },
+  ]
+  const groups = similarErrorGroups(items)
+  assert.equal(groups.length, 1)
+  assert.deepEqual(groups[0].ids.sort(), ['a', 'b'])
+  assert.ok(groups[0].signature.includes('<path>'))
+})
+
+test('相似错误聚类会跳过「只剩占位符」的过泛签名', async () => {
+  const { similarErrorGroups } = await import('../lib/memory/curator.js')
+  const now = new Date().toISOString()
+  const items = [
+    { id: 'a', content: 'x', type: 'skill_error_fix', status: 'approved', createdAt: now, errorSignature: 'ToolError: "abc": 1,' },
+    { id: 'b', content: 'y', type: 'skill_error_fix', status: 'approved', createdAt: now, errorSignature: 'ToolError: "def": 2,' },
+  ]
+  // 归一化后只剩 `ToolError: <str>: <n>,`，信息量不足，不应聚类
+  assert.equal(similarErrorGroups(items).length, 0)
 })

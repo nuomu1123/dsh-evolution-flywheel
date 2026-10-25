@@ -44,6 +44,72 @@ const MEMORY_PANEL_ID = 'memory-explorer'
 const MEMORY_SETTINGS_ID = 'memory'
 const MEMORY_API = '/memory-explorer/api'
 
+/** 解析探针对话线程；坏数据一律当空线程，绝不让面板崩。 */
+function threadOf(item: MemoryItem): Array<{ role: string; text: string; at: string }> {
+  if (item.probeThread === undefined || item.probeThread === '') return []
+  try {
+    const parsed: unknown = JSON.parse(item.probeThread)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (turn): turn is { role: string; text: string; at: string } =>
+        typeof turn === 'object' && turn !== null
+        && typeof (turn as { text?: unknown }).text === 'string',
+    )
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 把证据包 JSON 变成人能直接读的短文本。
+ * 直接糊一坨原始 JSON 等于没给证据——人还是不知道该看什么。
+ */
+function formatProbeEvidence(raw: string): string {
+  try {
+    const data = JSON.parse(raw) as Record<string, unknown>
+    const lines: string[] = []
+    const push = (label: string, value: unknown): void => {
+      if (value !== undefined && value !== null && value !== '') lines.push(`${label}：${String(value)}`)
+    }
+    push('总数', data.total)
+    push('保留', data.keepCount)
+    push('待裁决', data.undecided)
+    if (typeof data.note === 'string') push('口径', data.note)
+    const groups = Array.isArray(data.mergeGroups) ? data.mergeGroups : []
+    if (groups.length > 0) {
+      lines.push('重复组：')
+      for (const group of groups) {
+        const entry = group as Record<string, unknown>
+        lines.push(`  · ${String(entry.reason ?? '')}（${String(entry.count ?? '')} 条）`)
+      }
+    }
+    const undecided = Array.isArray(data.undecidedItems) ? data.undecidedItems : []
+    if (undecided.length > 0) {
+      lines.push('待裁决明细：')
+      for (const entry of undecided) {
+        const row = entry as Record<string, unknown>
+        lines.push(`  · [${String(row.type ?? '')}] ${String(row.excerpt ?? '')}`)
+      }
+    }
+    const archive = Array.isArray(data.archiveCandidates) ? data.archiveCandidates : []
+    if (archive.length > 0) {
+      lines.push('归档候选：')
+      for (const entry of archive) {
+        const row = entry as Record<string, unknown>
+        lines.push(`  · ${String(row.excerpt ?? '')} —— ${String(row.reason ?? '')}`)
+      }
+    }
+    const risks = Array.isArray(data.risks) ? data.risks : []
+    if (risks.length > 0) {
+      lines.push('风险：')
+      for (const risk of risks) lines.push(`  · ${String(risk)}`)
+    }
+    return lines.length > 0 ? lines.join('\n') : raw.slice(0, 2000)
+  } catch {
+    return raw.slice(0, 2000)
+  }
+}
+
 interface ClarifyDockProps {
   inputActions: {
     setDraft(text: string): void
@@ -1219,12 +1285,18 @@ function MemoryExplorerPage() {
   const [humanDeciding, setHumanDeciding] = React.useState(null)
   const [arbitrating, setArbitrating] = React.useState(null)
   const [drafts, setDrafts] = React.useState({} as Record<string, string>)
+  // 追问草稿与「答案草稿」分开：回答探针 ≠ 继续追问。
+  const [followDrafts, setFollowDrafts] = React.useState({} as Record<string, string>)
   const [activeTab, setActiveTab] = React.useState('all' as FilterTab)
   const [expanded, setExpanded] = React.useState({} as Record<string, boolean>)
   const [writeQueue, setWriteQueue] = React.useState('unknown')
   const [securityLog, setSecurityLog] = React.useState([] as SecurityIntercept[])
   const [billing, setBilling] = React.useState(null as Billing | null)
   const [auditEntries, setAuditEntries] = React.useState(null as AuditEntry[] | null)
+  // 体检 P0：遥测/审计失败必须与「真的没有数据」区分开。
+  // 否则接口一挂，用户会把「读不到」读成「没有攻击、没有花费」。
+  const [telemetryError, setTelemetryError] = React.useState('')
+  const [auditError, setAuditError] = React.useState('')
   const [auditLoading, setAuditLoading] = React.useState(false)
   const [distilling, setDistilling] = React.useState(false)
   const [curationDeciding, setCurationDeciding] = React.useState(null)
@@ -1256,17 +1328,30 @@ function MemoryExplorerPage() {
         fetch(`${MEMORY_API}/billing`, { cache: 'no-store' }),
       ])
       const securityBody = await securityResponse.json()
-      if (securityResponse.ok && securityBody?.ok === true && Array.isArray(securityBody.entries)) {
+      const securityOk = securityResponse.ok && securityBody?.ok === true && Array.isArray(securityBody.entries)
+      if (securityOk) {
         const entries = securityBody.entries as SecurityIntercept[]
         setSecurityLog((previous: SecurityIntercept[]) => JSON.stringify(previous) === JSON.stringify(entries) ? previous : entries)
       }
       const billingBody = await billingResponse.json()
-      if (billingResponse.ok && billingBody?.ok === true && billingBody.billing !== undefined) {
+      const billingOk = billingResponse.ok && billingBody?.ok === true && billingBody.billing !== undefined
+      if (billingOk) {
         const next = billingBody.billing as Billing
         setBilling((previous: Billing | null) => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)
       }
-    } catch {
-      // 遥测失败不阻塞主列表；保留上一次成功的数据。
+      // 失败与「确实 0 条」必须能分开：部分失败也要说出来。
+      if (!securityOk && !billingOk) {
+        setTelemetryError(`安全日志与账单接口均异常（HTTP ${securityResponse.status} / ${billingResponse.status}）`)
+      } else if (!securityOk) {
+        setTelemetryError(`安全日志接口异常（HTTP ${securityResponse.status}）`)
+      } else if (!billingOk) {
+        setTelemetryError(`账单接口异常（HTTP ${billingResponse.status}）`)
+      } else {
+        setTelemetryError('')
+      }
+    } catch (error) {
+      // 遥测失败不阻塞主列表；保留上一次成功的数据，但必须可见。
+      setTelemetryError(error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -1275,11 +1360,14 @@ function MemoryExplorerPage() {
     try {
       const response = await fetch(`${MEMORY_API}/audit?limit=30`, { cache: 'no-store' })
       const body = await response.json()
-      if (response.ok && body?.ok === true && Array.isArray(body.entries)) {
-        setAuditEntries(body.entries as AuditEntry[])
+      if (!response.ok || body?.ok !== true || !Array.isArray(body.entries)) {
+        throw new Error(typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`)
       }
-    } catch {
-      // 历史审计加载失败不阻塞主列表。
+      setAuditEntries(body.entries as AuditEntry[])
+      setAuditError('')
+    } catch (error) {
+      // 体检 P0：失败、无权限、真没记录不能三者同形。
+      setAuditError(error instanceof Error ? error.message : String(error))
     } finally {
       setAuditLoading(false)
     }
@@ -1505,6 +1593,38 @@ function MemoryExplorerPage() {
         previous.map(existing => existing.id === item.id ? body.item : existing))
     } catch (caught) {
       setError((caught as Error)?.message || '提交答案失败')
+    } finally {
+      setProbeDeciding(null)
+    }
+  }
+
+  // 追问：带着证据包 + 现有线程再问一次，回答写回 probeThread。
+  const probeFollow = async (item: MemoryItem) => {
+    const question = (followDrafts[item.id] ?? '').trim()
+    if (question === '') {
+      setError('请先写下你想追问的内容')
+      return
+    }
+    setProbeDeciding(`${item.id}:follow`)
+    setError('')
+    try {
+      const response = await fetch(`${MEMORY_API}/probe/followup`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: item.id, question }),
+      })
+      const body = await response.json()
+      if (!response.ok || body?.ok !== true) {
+        throw new Error(typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`)
+      }
+      const thread = Array.isArray(body.thread) ? body.thread : []
+      setItems((previous: MemoryItem[]) =>
+        previous.map(existing => existing.id === item.id
+          ? { ...existing, probeThread: JSON.stringify(thread) }
+          : existing))
+      setFollowDrafts((previous: Record<string, string>) => ({ ...previous, [item.id]: '' }))
+    } catch (caught) {
+      setError((caught as Error)?.message || '追问失败')
     } finally {
       setProbeDeciding(null)
     }
@@ -1805,7 +1925,7 @@ function MemoryExplorerPage() {
       h('div', { key: 'security', style: { ...memoryStyles.stat, ...memoryStyles.statInfo } }, [
         h('span', { key: 'label', style: memoryStyles.statLabel }, '安全拦截'),
         h('span', { key: 'value', style: memoryStyles.statValue }, String(securityLog.length)),
-        h('span', { key: 'hint', style: memoryStyles.count }, '本次运行'),
+        h('span', { key: 'hint', style: memoryStyles.count }, telemetryError === '' ? '本次运行' : '遥测异常'),
       ]),
       h('div', { key: 'queue', style: { ...memoryStyles.stat, ...queueStyle } }, [
         h('span', { key: 'label', style: memoryStyles.statLabel }, 'WriteQueue'),
@@ -1816,6 +1936,11 @@ function MemoryExplorerPage() {
       h('details', { key: 'security-panel', style: memoryStyles.panel }, [
         h('summary', { key: 'summary', style: memoryStyles.panelSummary },
           `安全拦截日志 · 本次运行 ${securityLog.length} 条`),
+        // 体检 P0：遥测失败时先说明「数字不可信」，再显示（可能过期的）计数。
+        telemetryError === ''
+          ? null
+          : h('div', { key: 'telemetry-error', style: memoryStyles.securityEmpty },
+            `遥测加载失败：${telemetryError}。下面的数字可能已过期，不代表没有拦截。`),
         securityLog.length === 0
           ? h('div', { key: 'empty', style: memoryStyles.securityEmpty },
             '本次运行尚未拦截到注入内容。规则命中只表示检测到可疑模式，不代表已确认攻击。')
@@ -1832,14 +1957,23 @@ function MemoryExplorerPage() {
         h('details', { key: 'audit-history', style: memoryStyles.auditHistory }, [
           h('summary', { key: 'summary', style: memoryStyles.panelSummary }, '持久化审计（最近 30 条）'),
           auditEntries === null
-            ? h('button', {
-              key: 'load',
-              type: 'button',
-              style: memoryStyles.button,
-              disabled: auditLoading,
-              onClick: () => { void loadAudit() },
-            }, auditLoading ? '加载中…' : '加载历史审计')
-            : h('div', { key: 'rows', style: memoryStyles.panelBody },
+            ? h('div', { key: 'audit-load' }, [
+              h('button', {
+                key: 'load',
+                type: 'button',
+                style: memoryStyles.button,
+                disabled: auditLoading,
+                onClick: () => { void loadAudit() },
+              }, auditLoading ? '加载中…' : auditError === '' ? '加载历史审计' : '重试加载审计'),
+              // 体检 P0：失败与「没有记录」必须能区分。
+              auditError === ''
+                ? null
+                : h('div', { key: 'audit-error', style: memoryStyles.securityEmpty },
+                  `审计加载失败：${auditError}`),
+            ])
+            : auditEntries.length === 0
+              ? h('div', { key: 'audit-empty', style: memoryStyles.securityEmpty }, '暂无审计记录（接口正常，确实没有写入）')
+              : h('div', { key: 'rows', style: memoryStyles.panelBody },
               auditEntries.slice(0, 30).map((entry: AuditEntry, index: number) => h('div', {
                 key: `audit-${index}`,
                 style: memoryStyles.securityRow,
@@ -1857,7 +1991,8 @@ function MemoryExplorerPage() {
             ? '熔断 Token 账单'
             : `熔断 Token 账单 · 今日 ${billing.todayTokens.toLocaleString('zh-CN')} tokens`),
         billing === null
-          ? h('div', { key: 'empty', style: memoryStyles.securityEmpty }, '暂无账单数据')
+          ? h('div', { key: 'empty', style: memoryStyles.securityEmpty },
+            telemetryError === '' ? '暂无账单数据' : `账单加载失败：${telemetryError}。请勿把这里读成「没有消耗」。`)
           : h('div', { key: 'rows', style: memoryStyles.panelBody }, [
             h('div', { key: 'r1', style: memoryStyles.billingRow }, [
               h('span', { style: memoryStyles.billingLabel }, '最近一次漫游'),
@@ -2368,6 +2503,54 @@ function MemoryExplorerPage() {
           h('div', { key: 'actions', style: memoryStyles.actions }, [
             item.type === 'cognitive_probe' && item.probeState === 'open'
               ? h('div', { key: 'probe-actions', style: { display: 'flex', flexDirection: 'column', gap: '6px', width: '100%' } }, [
+                item.probeContext !== undefined && item.probeContext !== ''
+                  ? h('details', { key: 'evidence' }, [
+                    h('summary', { key: 'summary', style: { cursor: 'pointer', fontSize: '12px', color: '#4A7FC1' } }, '展开证据包'),
+                    h('pre', {
+                      key: 'body',
+                      style: {
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-all',
+                        maxHeight: '200px',
+                        overflow: 'auto',
+                        margin: '6px 0 0',
+                        padding: '8px',
+                        background: 'rgba(0,0,0,0.04)',
+                        borderRadius: '6px',
+                        fontSize: '11px',
+                        lineHeight: 1.6,
+                      },
+                    }, formatProbeEvidence(item.probeContext)),
+                  ])
+                  : h('div', { key: 'no-evidence', style: { fontSize: '12px', opacity: 0.55 } }, '这条探针没有证据包（旧版本产生的）'),
+                ...(threadOf(item).length === 0
+                  ? []
+                  : [h('div', {
+                    key: 'thread',
+                    style: {
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px',
+                      // 长回答要能自己滚动读完，而不是把面板撑爆或溢出被裁掉。
+                      maxHeight: '260px',
+                      overflowY: 'auto',
+                      overflowX: 'hidden',
+                      paddingRight: '4px',
+                    },
+                  },
+                    threadOf(item).map((turn, index) => h('div', {
+                      key: `turn-${index}`,
+                      style: {
+                        fontSize: '12px',
+                        padding: '6px 8px',
+                        borderRadius: '6px',
+                        lineHeight: 1.6,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        overflowWrap: 'anywhere',
+                        background: turn.role === 'user' ? 'rgba(74,127,193,0.12)' : 'rgba(0,0,0,0.045)',
+                      },
+                    }, `${turn.role === 'user' ? '我' : '大肥鱼'}：${turn.text}`)))]),
                 h('textarea', {
                   key: 'answer',
                   style: memoryStyles.resolutionInput,
@@ -2401,6 +2584,29 @@ function MemoryExplorerPage() {
                     disabled: probeDeciding !== null,
                     onClick: () => { void probeIgnore(item) },
                   }, '跳过'),
+                ]),
+                // 追问入口：有疑问可以继续问，而不是只能「答」或「跳过」。
+                // 占位文本留空——预设内容会暗示「只能这么问」，反而限制表达。
+                h('div', { key: 'follow-label', style: { fontSize: '11px', opacity: 0.6, marginTop: '2px' } }, '继续追问（自由输入）'),
+                h('textarea', {
+                  key: 'follow',
+                  style: memoryStyles.resolutionInput,
+                  rows: 2,
+                  value: followDrafts[item.id] ?? '',
+                  placeholder: '',
+                  onChange: (event: { target: { value: string } }) => {
+                    const value = event.target.value
+                    setFollowDrafts((previous: Record<string, string>) => ({ ...previous, [item.id]: value }))
+                  },
+                }),
+                h('div', { key: 'follow-buttons', style: memoryStyles.actions }, [
+                  h('button', {
+                    key: 'follow',
+                    type: 'button',
+                    style: memoryStyles.save,
+                    disabled: probeDeciding !== null,
+                    onClick: () => { void probeFollow(item) },
+                  }, probeDeciding === `${item.id}:follow` ? '追问中…' : '追问'),
                 ]),
               ])
               : null,

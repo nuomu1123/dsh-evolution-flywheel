@@ -37,6 +37,24 @@ function bigrams(text: string): Set<string> {
   return result
 }
 
+/**
+ * 从错误上下文里提取定位指纹（文件路径或命令）。
+ * 错误捕获类记忆的 content 会被归一成同一句话（「错误：FsError: ...」），
+ * 真正区分场景的信息（哪个文件、哪条命令）只存在于 context 里。
+ * 不提取它，「同一错误、不同场景」就会被误判成重复。
+ */
+export function errorLocator(context: string | undefined): string {
+  if (context === undefined || context === '') return ''
+  const match = /\{"(?:command|file_path)"\s*:\s*"((?:[^"\\]|\\.)*)"/u.exec(context)
+  if (match === null) return ''
+  const raw = match[1] ?? ''
+  try {
+    return JSON.parse(`"${raw}"`) as string
+  } catch {
+    return raw.replace(/\\\\/gu, '\\')
+  }
+}
+
 /** 字符 bigram Jaccard 相似度：只用于“提议合并”，不作自动合并依据。 */
 export function contentSimilarity(left: string, right: string): number {
   const leftSet = bigrams(left)
@@ -63,6 +81,10 @@ function similarGroups(active: readonly MemoryRecord[]): Array<{ ids: string[]; 
       if (right === undefined || used.has(right.id)) continue
       if (left.type !== right.type) continue
       if (left.content.trim() === right.content.trim()) continue
+      // 同一错误落在不同文件/命令上 → 不同场景。合并会抹掉唯一的定位信息。
+      const leftLocator = errorLocator(left.context)
+      const rightLocator = errorLocator(right.context)
+      if (leftLocator !== '' && rightLocator !== '' && leftLocator !== rightLocator) continue
       const score = contentSimilarity(left.content, right.content)
       if (score < SIMILARITY_THRESHOLD) continue
       used.add(left.id)
@@ -113,7 +135,8 @@ export function buildCurationReport(
   const keep: CurationItem[] = []
   const archive: CurationItem[] = []
   const highValue: CurationItem[] = []
-  const duplicateGroups = new Map<string, string[]>()
+  // key 带上定位指纹：content 相同但文件/命令不同，是不同场景，不能算重复。
+  const duplicateGroups = new Map<string, { content: string; locator: string; ids: string[] }>()
   let fresh = 0
   let faded = 0
   let highSalience = 0
@@ -121,9 +144,11 @@ export function buildCurationReport(
   for (const item of active) {
     const key = item.content.trim()
     if (key !== '') {
-      const ids = duplicateGroups.get(key) ?? []
-      ids.push(item.id)
-      duplicateGroups.set(key, ids)
+      const locator = errorLocator(item.context)
+      const mapKey = `${key}@@${locator}`
+      const group = duplicateGroups.get(mapKey) ?? { content: key, locator, ids: [] }
+      group.ids.push(item.id)
+      duplicateGroups.set(mapKey, group)
     }
     const salience = memorySalience(item)
     const isOld = isFaded(item, now)
@@ -156,19 +181,28 @@ export function buildCurationReport(
     })
   }
 
-  const exactMerge = [...duplicateGroups.entries()]
-    .filter(([, ids]) => ids.length >= 2)
-    .map(([content, ids]) => ({
-      ids,
-      reason: `内容完全重复：${content.slice(0, 60)}`,
+  const exactMerge = [...duplicateGroups.values()]
+    .filter(group => group.ids.length >= 2)
+    .map(group => ({
+      ids: group.ids,
+      reason: `内容完全重复${group.locator === '' ? '' : `（${group.locator}）`}：${group.content.slice(0, 60)}`,
     }))
   const merge = [...exactMerge, ...similarGroups(active)]
 
   const undecided = active.filter(item =>
     item.status === 'suggested' || item.status === 'staged' || item.status === 'under_review').length
+  // 下钻（2026-10-25 反馈 P2）：只给「待裁决 N 条」用户不知道下一步做什么，
+  // 这里拆成可行动的三类：待确认 / 待审阅 / 等圣裁（再分模型故障与真需判断）。
+  const suggestedCount = active.filter(item => item.status === 'suggested').length
+  const reviewCount = active.filter(item => item.status === 'staged' || item.status === 'under_review').length
+  const humanItems = active.filter(item => item.status === 'human_intervention')
+  const MODEL_FAILURE_REASON = /max-tokens|未输出正文|LLM 未返回 JSON|JSON 不完整|JSON 不是对象|Expected .*in JSON|连接中断/iu
+  const modelFailureCount = humanItems.filter(item => MODEL_FAILURE_REASON.test(item.debateSummary ?? '')).length
+  const needsHumanCount = humanItems.length - modelFailureCount
   const risks: string[] = []
   if (faded > 0) risks.push(`${faded} 条记忆已褪色，建议确认后归档`)
-  if (undecided > 0) risks.push(`${undecided} 条记忆尚未裁决，长期停留会稀释注意力`)
+  if (undecided > 0) risks.push(`${undecided} 条记忆尚未裁决（待确认 ${suggestedCount} 条 / 待审阅 ${reviewCount} 条），长期停留会稀释注意力`)
+  if (humanItems.length > 0) risks.push(`${humanItems.length} 条等待人类圣裁：其中 ${modelFailureCount} 条是模型故障遗留（可批量重试），${needsHumanCount} 条需要你亲自判断`)
   if (active.length > 800) risks.push('记忆条数接近 1 MiB 文件上限，建议归档或导出')
   if (merge.length > 0) risks.push(`${merge.length} 组内容完全重复，建议合并`)
 
@@ -211,42 +245,173 @@ export function archiveIdsOf(payload: CurationReportPayload): string[] {
 }
 
 /**
+ * 从审查摘要里提取「想问老板的问题」。
+ * 格式不合法时返回 undefined——宁可没有探针，也不猜测模型意图。
+ */
+export function parseCurationProbe(text: string): { question: string; reason: string } | undefined {
+  const question = /【想问】[ \t]*([^\n【]*)/u.exec(text)?.[1]?.trim() ?? ''
+  if (question === '') return undefined
+  // 明确表达「没有问题」时，不硬造一个探针——为了提问而提问只会稀释注意力。
+  if (/^(无|没有|暂无|没有问题|（无）|\(无\)|none|n\/a)$/iu.test(question)) return undefined
+  // 模型经常输出空的【原因】：匹配到空串时 ?? 默认值 不会生效，这里显式兜底。
+  const reasonText = /【原因】[ \t]*([^\n【]*)/u.exec(text)?.[1]?.trim() ?? ''
+  const reason = reasonText === '' ? '整理记忆时产生的疑问（模型未说明原因）' : reasonText
+  return { question: question.slice(0, 120), reason: reason.slice(0, 120) }
+}
+
+/**
+ * 整理时刻的证据包。
+ *
+ * 一句「完全重复的 6 组是否含差异」无法回答——因为人不知道是哪六组。
+ * 这里把提问所依据的结构化数据一并带上，让问题可以被展开、被判断、被追问。
+ */
+export function buildProbeEvidence(
+  payload: CurationReportPayload,
+  items?: readonly MemoryRecord[],
+): Record<string, unknown> {
+  // 待裁决明细：只有列出具体条目，「76 + 12 是否超过 78」这类矛盾才能自证。
+  const undecidedItems = (items ?? [])
+    .filter(item => item.archived !== true
+      && (item.status === 'suggested' || item.status === 'staged' || item.status === 'under_review'))
+    .slice(0, 12)
+    .map(item => ({
+      id: item.id,
+      type: item.type,
+      excerpt: (item.errorSignature ?? item.content).replace(/\s+/gu, ' ').slice(0, 80),
+    }))
+  return {
+    kind: 'curation',
+    generatedAt: payload.generatedAt,
+    total: payload.total,
+    keepCount: payload.keep.length,
+    undecided: payload.stats.undecided,
+    undecidedItems,
+    // 口径说明：分类维度与状态维度是两套尺子，数量相加没有意义。
+    note: 'keep/archive/highValue 按显著性互斥分类；undecided 按 status 统计。两者是不同维度，会重叠，不能相加。',
+    mergeGroups: payload.merge.slice(0, 8).map(group => ({
+      count: group.ids.length,
+      reason: group.reason,
+      ids: group.ids,
+    })),
+    archiveCandidates: payload.archive.slice(0, 6).map(item => ({
+      id: item.id,
+      excerpt: item.content,
+      reason: item.reason,
+    })),
+    highValue: payload.highValue.slice(0, 6).map(item => ({
+      id: item.id,
+      excerpt: item.content,
+      reason: item.reason,
+    })),
+    risks: payload.risks,
+  }
+}
+
+/**
  * 可选的 LLM 审查摘要：只基于规则报告作判断，不编造记忆。
+ * 顺带给模型一个机会提出「想问老板的真问题」——整理时刻本就最清楚自己的盲区，
+ * 在这里提问的边际成本只是几十个 token，不需要额外的唤醒。
  * 预算耗尽、无 LLM 或失败时返回 undefined，调用方回退规则摘要。
  */
 export async function summarizeCurationWithLlm(
   ctx: MemoryContextBase,
   store: MemoryStore,
   payload: CurationReportPayload,
-  maxTokens = 400,
-): Promise<{ text: string; tokensUsed: number } | undefined> {
+  // 思考型模型的 reasoning 也算进 maxTokens：实测一次整理要思考 5000+ 字，
+  // 3000 会在正文之前就被截断。给足空间，正文才有机会出现。
+  maxTokens = 8000,
+): Promise<{ text: string; tokensUsed: number; probe?: { question: string; reason: string }; error?: string } | undefined> {
   try {
     const budget = await readBudget(store)
-    if (budget.exceeded) return undefined
+    if (budget.exceeded) {
+      return { text: '', tokensUsed: 0, error: `每日预算已用完（今日 ${budget.todayTokens} / 上限 ${budget.dailyBudget}）` }
+    }
     const lines = [
       `总数 ${payload.total}；保留 ${payload.keep.length}；归档候选 ${payload.archive.length}；高价值 ${payload.highValue.length}；重复组 ${payload.merge.length}；待裁决 ${payload.stats.undecided}。`,
-      payload.archive.length === 0 ? '' : `归档候选：${payload.archive.slice(0, 5).map(item => item.content).join('；')}`,
-      payload.highValue.length === 0 ? '' : `高价值：${payload.highValue.slice(0, 5).map(item => item.content).join('；')}`,
+      payload.archive.length === 0 ? '' : `归档候选：${payload.archive.slice(0, 5).map(item => `${item.content}（${item.reason}）`).join('；')}`,
+      payload.highValue.length === 0 ? '' : `高价值：${payload.highValue.slice(0, 5).map(item => `${item.content}（${item.reason}）`).join('；')}`,
+      payload.merge.length === 0 ? '' : `重复组：${payload.merge.slice(0, 5).map(group => `${group.ids.length} 条 · ${group.reason}`).join('；')}`,
       payload.risks.length === 0 ? '' : `风险：${payload.risks.join('；')}`,
     ].filter(line => line !== '')
     const completion = await complete(
       ctx,
-      '你是记忆整理器的审查者。只根据给定报告作判断，不编造新记忆；输出中文，120-200 字。',
+      '你是记忆整理器的审查者。只根据给定报告作判断，不编造新记忆；输出中文。',
       [
-        '请审查这份记忆整理报告，给出：',
-        '1. 最值得保留的 1-2 条及理由；',
-        '2. 最该归档的 1-2 条及风险；',
-        '3. 人类裁决时最该检查什么。',
+        '请审查这份记忆整理报告，按以下格式输出：',
+        '1. 最值得保留的 1-2 条及理由（60 字内）；',
+        '2. 最该归档的 1-2 条及风险（60 字内）；',
+        '3. 人类裁决时最该检查什么（40 字内）；',
+        '',
+        '最后另起两行，提一个你最想问老板的真问题。三条硬要求：',
+        '· 必须指向具体的记忆内容、矛盾，或做决定时真正缺的那条信息；',
+        '· 不要问「数量对不上」这类统计口径问题——那种问题自己查一下就知道，不值得占用人的注意力；',
+        '· 如果这次确实没有值得问的，就输出【想问】无，不要为了提问而提问。',
+        '【想问】<问题，30 字以内，或写「无」>',
+        '【原因】<为什么问，30 字以内>',
         '',
         ...lines,
       ].join('\n'),
       maxTokens,
     )
-    const text = completion.text.trim()
-    if (text === '') return undefined
-    return { text: text.slice(0, 800), tokensUsed: completion.tokensUsed }
+    const raw = completion.text.trim()
+    if (raw === '') return { text: '', tokensUsed: completion.tokensUsed, error: 'LLM 返回了空文本' }
+    const probe = parseCurationProbe(raw)
+    const stripped = probe === undefined ? raw : raw.replace(/【想问】[\s\S]*$/u, '').trim()
+    return {
+      text: (stripped === '' ? raw : stripped).slice(0, 800),
+      tokensUsed: completion.tokensUsed,
+      ...(probe === undefined ? {} : { probe }),
+    }
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
     console.error('[dsh-evolution-flywheel] curation LLM summary failed:', error)
-    return undefined
+    return { text: '', tokensUsed: 0, error: message }
   }
+}
+
+/**
+ * 错误签名归一化：把路径、数字、引号内容替换为占位符。
+ * 用于把「同一种错误、不同文件」聚成一组（2026-10-25 反馈 P1-1：
+ * ReplaceFileW EIO 因路径不同被拆成 3 条，用户视角是同一个问题）。
+ */
+export function normalizeErrorSignature(value: string): string {
+  return value
+    .replace(/[A-Za-z]:\\[^\s"']+/g, '<path>')
+    .replace(/\b\d+\b/g, '<n>')
+    .replace(/"[^"]*"/g, '<str>')
+    .replace(/'[^']*'/g, '<str>')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200)
+}
+
+export interface SimilarErrorGroup {
+  /** 归一化后的签名（用于展示「这组是什么问题」）。 */
+  signature: string
+  ids: string[]
+  excerpts: string[]
+}
+
+/** 按归一化签名把同类错误聚组；只读，合并不自动执行。 */
+export function similarErrorGroups(items: readonly MemoryRecord[], minSize = 2): SimilarErrorGroup[] {
+  const groups = new Map<string, SimilarErrorGroup>()
+  for (const item of items) {
+    if (item.archived === true) continue
+    if (item.type !== 'skill_error_fix') continue
+    const raw = item.errorSignature ?? item.content
+    const signature = normalizeErrorSignature(raw)
+    if (signature === '') continue
+    // 归一化可能过度：`ToolError: <str>: <str>,` 这种只剩占位符的签名会把不同错误聚到一起。
+    // 去掉占位符后信息量不足 8 个字符的，视为「太泛」不参与聚类。
+    const informative = signature
+      .replace(/^(?:Tool|Fs|ToolArgs|Web|Search|Agent)?(?:Error|Exception):\s*/iu, '')
+      .replace(/<path>|<n>|<str>/gu, '')
+      .replace(/[\s:,;()[\]{}"'`]+/gu, '')
+    if (informative.length < 8) continue
+    const group = groups.get(signature) ?? { signature, ids: [], excerpts: [] }
+    group.ids.push(item.id)
+    if (group.excerpts.length < 6) group.excerpts.push(raw.replace(/\s+/g, ' ').slice(0, 80))
+    groups.set(signature, group)
+  }
+  return [...groups.values()].filter(group => group.ids.length >= minSize)
 }

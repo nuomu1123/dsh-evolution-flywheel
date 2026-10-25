@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto'
 import type { MemoryContextBase } from './context.js'
 import type { MemoryEventHub } from './events.js'
 import { sanitizeText } from './sanitize.js'
+import { redactArgs, redactText } from './redact.js'
 
 const sanitize = (value: unknown, maxLength = 1000): string =>
   sanitizeText(value, maxLength, '错误捕获')
@@ -75,14 +76,18 @@ export function buildSkillCandidate(input: {
 }): SkillCandidate {
   const parts = errorParts(input.error)
   const stackKey = keyStackLines(parts.stack)
-  const signature = `${parts.name}: ${parts.message.split('\n')[0]?.trim() ?? parts.message}`.slice(0, 300)
+  // 错误消息与上下文都可能夹带 URL token / API Key / 邮箱，落盘前统一脱敏。
+  const signature = redactText(
+    `${parts.name}: ${parts.message.split('\n')[0]?.trim() ?? parts.message}`,
+    300,
+  )
   const fingerprint = createHash('sha256')
     .update([parts.name, parts.message, ...stackKey].join('\n'))
     .digest('hex')
   return {
     errorSignature: signature,
     fingerprint,
-    context: input.context.trim().slice(0, 500) || '未记录任务上下文',
+    context: redactText(input.context.trim(), 500) || '未记录任务上下文',
     ...(input.resolution !== undefined && input.resolution.trim() !== ''
       ? { resolution: input.resolution.trim().slice(0, 1000) }
       : {}),
@@ -279,6 +284,11 @@ export function registerSkillExtraction(
       if (event.type === 'tool/result') {
         const message = data?.message
         const messageText = contentText(message)
+        // 跨插件兼容：compaction-tool-result-pruner 在上下文压缩时会 append 一个新的
+        // tool/result（内容被 head/tail 截断，中间替换为 PRUNE_MARKER）。
+        // 它不是一次新的失败，而是一次已记录失败的"剪枝版"；
+        // 若不当成重复处理，同一错误会被记成截断版第二条（fingerprint 不同，去重挡不住）。
+        if (messageText.includes('[... tool result middle pruned ...]')) return
         const failedByContent = /\[exit code:\s*[1-9]\d*\]|(?:^|\n)\s*(?:Error|error|Cannot find|Exception|Traceback|ModuleNotFoundError|TypeError|ReferenceError)\b/u.test(messageText)
         if (message?.isError !== true && data?.error === undefined && !failedByContent) return
         const callId = message?.toolCallId ?? data?.callId
@@ -289,7 +299,7 @@ export function registerSkillExtraction(
         const errorText = data?.error?.reason?.trim() || diagnosticLine(messageText)
         const candidate = buildSkillCandidate({
           error: { name: errorName, message: errorText, stack: messageText },
-          context: call === undefined ? '工具调用失败' : `工具 ${call.name} 执行失败；参数摘要：${call.args.slice(0, 200)}`,
+          context: call === undefined ? '工具调用失败' : `工具 ${call.name} 执行失败；参数摘要：${redactArgs(call.args, 200)}`,
         })
         void capture(candidate, id).catch(error => {
           console.error('[dsh-evolution-flywheel] skill capture failed:', error)
@@ -300,6 +310,13 @@ export function registerSkillExtraction(
       if (event.type === 'assistant/message') {
         const text = contentText(data?.message)
         if (text === '' || !FIX_HINT.test(text)) return
+        // resolution 只该是「怎么解决的」一句话，不是整篇汇报。
+        // 2026-10-24 实测：一条长的交付汇报只因为含「修复」二字，就把 1500 字全文写进了
+        // 最近一次失败记忆的 resolution，面板直接变成汇报正文。这里加两道闸：
+        //   1) 长度上限；2) 多个 Markdown 标题视为报告而非排错说明。
+        if (text.length > 600) return
+        const headingCount = (text.match(/^#{1,3} /gmu) ?? []).length
+        if (headingCount >= 2) return
         const queue = pending.get(id)
         if (queue === undefined || queue.length === 0) return
         const latest = queue.at(-1)

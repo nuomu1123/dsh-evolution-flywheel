@@ -121,7 +121,12 @@ test('LLM 摘要：有模型时返回建议，无模型时回退 undefined', asy
     assert.ok(result)
     assert.match(result.text, /保留/)
     assert.ok(result.tokensUsed >= 0)
-    assert.equal(await summarizeCurationWithLlm({ get: () => undefined }, store, payload), undefined)
+    // 契约变更（2026-10-24）：无 LLM 时不再静默返回 undefined，而是带回可诊断的 error。
+    // 调用方仍按 text 为空回退规则摘要，行为等价；区别是失败从此可见。
+    const noLlm = await summarizeCurationWithLlm({ get: () => undefined }, store, payload)
+    assert.ok(noLlm)
+    assert.equal(noLlm.text, '')
+    assert.match(noLlm.error, /llm/i)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

@@ -5,7 +5,7 @@
  * 不接触 profile、node_modules 或其他插件的数据。
  */
 import { randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { clampMetaInsight, sanitizeText } from './sanitize.js'
@@ -45,6 +45,8 @@ export interface MemoryRecord {
   errorSignature?: string
   context?: string
   resolution?: string
+  /** resolution 的来源：inferred=模型推测未验证；verified=人类确认、探针验证或实测有效。 */
+  resolutionSource?: 'inferred' | 'verified'
   fingerprint?: string
   lastSeenAt?: string
   count?: number
@@ -125,8 +127,12 @@ export interface MemoryRecord {
   answer?: string
   /** 回答时间。 */
   answeredAt?: string
-  /** 探针来源：model-distill / dma / manual。 */
+  /** 探针来源：model-distill / dma / manual / curation。 */
   probeSource?: string
+  /** 探针证据包（JSON）：提问所依据的结构化上下文，让人能展开判断而不是瞎答。 */
+  probeContext?: string
+  /** 探针对话线程（JSON 数组 [{role,text,at}]）：支持多轮追问，而不只是一问一答。 */
+  probeThread?: string
 }
 
 /** 共享世界模型的变更事件：任何 Agent 写入后立即广播，保证秒级同步。 */
@@ -291,6 +297,9 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
     ...(typeof value.errorSignature === 'string' ? { errorSignature: value.errorSignature } : {}),
     ...(typeof value.context === 'string' ? { context: value.context } : {}),
     ...(typeof value.resolution === 'string' ? { resolution: value.resolution } : {}),
+    ...(value.resolutionSource === 'inferred' || value.resolutionSource === 'verified'
+      ? { resolutionSource: value.resolutionSource }
+      : {}),
     ...(typeof value.fingerprint === 'string' ? { fingerprint: value.fingerprint } : {}),
     ...(typeof value.lastSeenAt === 'string' ? { lastSeenAt: value.lastSeenAt } : {}),
     ...(typeof value.count === 'number' ? { count: value.count } : {}),
@@ -340,6 +349,8 @@ function normalizeRecord(value: MemoryRecord): MemoryRecord {
     ...(typeof value.answer === 'string' ? { answer: sanitizeQuiet(value.answer, 2000) } : {}),
     ...(typeof value.answeredAt === 'string' ? { answeredAt: value.answeredAt } : {}),
     ...(typeof value.probeSource === 'string' ? { probeSource: sanitizeQuiet(value.probeSource, 120) } : {}),
+    ...(typeof value.probeContext === 'string' ? { probeContext: sanitizeQuiet(value.probeContext, 4000) } : {}),
+    ...(typeof value.probeThread === 'string' ? { probeThread: sanitizeQuiet(value.probeThread, 8000) } : {}),
     ...(typeof value.thinkingModel === 'string' ? { thinkingModel: sanitizeQuiet(value.thinkingModel, 120) } : {}),
     ...(typeof value.analogyReason === 'string' ? { analogyReason: sanitizeQuiet(value.analogyReason, 500) } : {}),
     ...(typeof value.effectiveFor === 'string' ? { effectiveFor: sanitizeQuiet(value.effectiveFor, 300) } : {}),
@@ -379,10 +390,44 @@ export class WriteQueue {
   }
 }
 
+/** memory_search 的可选过滤条件。 */
+export interface MemorySearchOptions {
+  /** 只返回这些类型（单个或数组）；省略表示不过滤。 */
+  type?: MemoryType | readonly MemoryType[]
+  /** 是否包含已归档记录（默认 false）。 */
+  includeArchived?: boolean
+}
+
+/**
+ * 命中质量打分：正文命中 > 错误签名 > 上下文 > 解法；全等/前缀额外加权。
+ * 返回 0 表示未命中。新记录有极小加成（最多 +3），避免旧噪声压过当前上下文。
+ */
+function searchScore(item: MemoryRecord, text: string): number {
+  const content = item.content.toLowerCase()
+  const signature = (item.errorSignature ?? '').toLowerCase()
+  const context = (item.context ?? '').toLowerCase()
+  const resolution = (item.resolution ?? '').toLowerCase()
+  let score = 0
+  if (content === text) score += 100
+  else if (content.startsWith(text)) score += 50
+  else if (content.includes(text)) score += 20
+  if (signature.includes(text)) score += 15
+  if (context.includes(text)) score += 8
+  if (resolution.includes(text)) score += 5
+  // 漫游猜想（speculative）常含大量技术词，但未经验证：默认降权，仍可检索到但排在后面。
+  if (item.status === 'speculative') score -= 15
+  if (score <= 0) return 0
+  const ageDays = (Date.now() - Date.parse(item.createdAt)) / 86_400_000
+  if (Number.isFinite(ageDays)) score += Math.max(0, 3 - ageDays / 10)
+  return score
+}
+
 export class MemoryStore {
   private readonly file: string
   private queue: Promise<unknown> = Promise.resolve()
   private readonly writes = new WriteQueue()
+  /** 已隔离到 `.corrupt` 旁路文件的坏行，按原文去重，避免每次读都重复追加。 */
+  private readonly quarantined = new Set<string>()
 
   constructor(dataDir: string = defaultDataDir(), private readonly notify?: SharedWorldListener) {
     this.file = join(dataDir, 'memories.jsonl')
@@ -515,7 +560,8 @@ export class MemoryStore {
         context,
         fingerprint,
         ...(resolution !== undefined && resolution !== ''
-          ? { resolution }
+          // 错误捕获路径的 resolution 都来自模型，默认标记为「推测」。
+          ? { resolution, resolutionSource: 'inferred' as const }
           : {}),
         origin: 'error-capture',
         originDetail: '工具错误',
@@ -556,7 +602,8 @@ export class MemoryStore {
   }
 
   /** 按记忆 id 设置/清空解决办法；返回更新后的记录。 */
-  setResolution(id: string, resolution: string): Promise<MemoryRecord | undefined> {
+  /** 更新解法文本；source 默认 inferred（新文本未验证），人类确认或探针验证可显式标 verified。 */
+  setResolution(id: string, resolution: string, source: 'inferred' | 'verified' = 'inferred'): Promise<MemoryRecord | undefined> {
     const key = id.trim()
     if (key === '') return Promise.resolve(undefined)
     const text = resolution.trim().slice(0, 1000)
@@ -568,7 +615,9 @@ export class MemoryStore {
       const current = items[index]
       if (current === undefined) return undefined
       const { resolution: _previous, ...rest } = current
-      const updated: MemoryRecord = text === '' ? rest : { ...rest, resolution: text }
+      const updated: MemoryRecord = text === ''
+        ? rest
+        : { ...rest, resolution: text, resolutionSource: source }
       const next = [...items]
       next[index] = updated
       await this.writeAll(next)
@@ -601,6 +650,7 @@ export class MemoryStore {
         ...(patch.errorSignature !== undefined ? { errorSignature: sanitize(patch.errorSignature, 300) } : {}),
         ...(patch.context !== undefined ? { context: sanitize(patch.context, 500) } : {}),
         ...(patch.resolution !== undefined ? { resolution: sanitize(patch.resolution, 1000) } : {}),
+        ...(patch.resolutionSource !== undefined ? { resolutionSource: patch.resolutionSource } : {}),
         ...(patch.reviewReason !== undefined ? { reviewReason: sanitize(patch.reviewReason, 500) } : {}),
         ...(patch.debateSummary !== undefined ? { debateSummary: sanitize(patch.debateSummary, 800) } : {}),
         ...(patch.challenge !== undefined ? { challenge: sanitize(patch.challenge, 300) } : {}),
@@ -653,6 +703,8 @@ export class MemoryStore {
         ...(patch.answer !== undefined ? { answer: sanitize(patch.answer, 2000) } : {}),
         ...(patch.answeredAt !== undefined ? { answeredAt: patch.answeredAt } : {}),
         ...(patch.probeSource !== undefined ? { probeSource: sanitize(patch.probeSource, 120) } : {}),
+        ...(patch.probeContext !== undefined ? { probeContext: sanitize(patch.probeContext, 4000) } : {}),
+        ...(patch.probeThread !== undefined ? { probeThread: sanitize(patch.probeThread, 8000) } : {}),
       }
       const next = [...items]
       next[index] = updated
@@ -711,21 +763,32 @@ export class MemoryStore {
     })
   }
 
-  /** 只读检索，供离线探索 Agent 的 memory_search 使用。 */
-  search(query: string, limit = 10): Promise<MemoryRecord[]> {
+  /**
+   * 只读检索，供 memory_search 工具使用。
+   *
+   * 2026-10-25 真实使用反馈：旧实现按文件顺序返回、无类型过滤，搜「插件」10 条里
+   * 只有 1 条有用（其余是跨学科漫游）。现在按命中质量排序，并支持按类型过滤。
+   */
+  search(query: string, limit = 10, options: MemorySearchOptions = {}): Promise<MemoryRecord[]> {
     const text = query.trim().toLowerCase()
     if (text === '') return Promise.resolve([])
+    const types = options.type === undefined
+      ? undefined
+      : new Set<MemoryType>(Array.isArray(options.type) ? options.type : [options.type])
+    const includeArchived = options.includeArchived === true
     return this.runExclusive(async () => {
       await this.ensureSeeded()
       const items = await this.readAll()
-      return items
-        .filter(item => [
-          item.content,
-          item.resolution ?? '',
-          item.context ?? '',
-          item.errorSignature ?? '',
-        ].some(field => field.toLowerCase().includes(text)))
-        .slice(0, Math.max(1, Math.min(50, limit)))
+      const scored: Array<{ item: MemoryRecord; score: number }> = []
+      for (const item of items) {
+        if (!includeArchived && item.archived === true) continue
+        if (types !== undefined && !types.has(item.type)) continue
+        const score = searchScore(item, text)
+        if (score > 0) scored.push({ item, score })
+      }
+      scored.sort((left, right) =>
+        right.score - left.score || right.item.createdAt.localeCompare(left.item.createdAt))
+      return scored.slice(0, Math.max(1, Math.min(50, limit))).map(entry => entry.item)
     })
   }
 
@@ -835,12 +898,48 @@ export class MemoryStore {
       if (trimmed === '') continue
       try {
         const value: unknown = JSON.parse(trimmed)
-        if (isRecord(value)) items.push(normalizeRecord(value))
-      } catch {
-        // 跳过损坏行，避免单条坏数据拖垮列表。
+        if (isRecord(value)) {
+          items.push(normalizeRecord(value))
+        } else {
+          // 合法 JSON 但不是记忆对象（如 `{}`、数组、别家文件混入）同样不能静默丢。
+          await this.quarantine(trimmed, new Error('不是合法的记忆对象'))
+        }
+      } catch (error) {
+        // 坏行不能静默消失：后续任一 writeAll 都会用内存集合重写整个文件，
+        // 静默丢弃等于把损坏行永久删除。先隔离到 `.corrupt` 旁路文件，再继续。
+        await this.quarantine(trimmed, error)
       }
     }
     return items.sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+  }
+
+  /**
+   * 把无法解析的 JSONL 行备份到 `${file}.corrupt`。
+   *
+   * 为什么不能只记日志：`readAll` 之后通常紧跟一次 `writeAll`（追加/更新/确认都会
+   * 重写整个文件），内存里没有的行会被物理删除。备份到旁路文件后，坏行仍可人工恢复。
+   * 同一进程内按原文去重，避免高频读路径反复追加同一行。
+   */
+  private async quarantine(line: string, error: unknown): Promise<void> {
+    const snippet = line.length > 500 ? `${line.slice(0, 500)}…` : line
+    if (this.quarantined.has(snippet)) return
+    this.quarantined.add(snippet)
+    // 上限 500 条，防止一个被反复读的坏文件把内存吃光。
+    if (this.quarantined.size > 500) {
+      const oldest = this.quarantined.values().next().value
+      if (oldest !== undefined) this.quarantined.delete(oldest)
+    }
+    const reason = error instanceof Error ? error.message : String(error)
+    try {
+      await mkdir(dirname(this.file), { recursive: true })
+      await appendFile(`${this.file}.corrupt`, `${new Date().toISOString()}\t${snippet}\n`, 'utf8')
+      console.error(
+        `[dsh-evolution-flywheel] memories.jsonl 损坏行已隔离到 .corrupt（${reason}）：${snippet.slice(0, 120)}`,
+      )
+    } catch (appendError) {
+      // 连备份都失败时必须是高音量错误：这一行确实可能丢。
+      console.error('[dsh-evolution-flywheel] 损坏行隔离失败，该行可能丢失：', appendError, snippet.slice(0, 120))
+    }
   }
 
   private writeAll(items: readonly MemoryRecord[]): Promise<void> {

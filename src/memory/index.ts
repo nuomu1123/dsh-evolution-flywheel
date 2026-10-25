@@ -3,6 +3,7 @@
  * 错误感知、冲突自检与召回监听器使用。
  */
 import { registerMemoryApi, type MemoryApiContext } from './api.js'
+import { registerBrowserObserver, type BrowserObserverContext } from './browser-observer.js'
 import { registerConflictScanner, type ConflictScannerContext } from './conflict-scanner.js'
 import { createHostDmaExplorer, DmaRunner, registerDmaSchedule } from './dma.js'
 import { createToolEvidenceSearch } from './evidence-search.js'
@@ -24,6 +25,7 @@ export interface MemoryHostContext
   MemoryExtractionContext,
   SkillExtractionContext,
   MemoryRecallContext,
+  BrowserObserverContext,
   ConflictScannerContext {}
 
 export { MemoryEventHub }
@@ -48,6 +50,8 @@ export function registerMemoryFeatures(ctx: MemoryHostContext): void {
   registerMemoryTools(ctx, store)
   registerMemoryApi(ctx, store, events, reviewEngine, dmaRunner)
   registerMemoryExtraction(ctx, store, events)
+  // 浏览器不可逆动作入记忆：与 skill-extractor 共用 session/event 流。
+  registerBrowserObserver(ctx, store, events)
   registerSkillExtraction(ctx, store, events, record => {
     void reviewEngine.review(record.id)
   })

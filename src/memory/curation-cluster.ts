@@ -8,7 +8,8 @@
  *
  * 第一版是同进程顺序执行（规则引擎零成本）；跨进程并行要等锁与调度再演进。
  */
-import { buildCurationReport, shouldRunCuration, summarizeCurationQuality, summarizeCurationWithLlm } from './curator.js'
+import { buildCurationReport, buildProbeEvidence, shouldRunCuration, summarizeCurationQuality, summarizeCurationWithLlm } from './curator.js'
+import { createProbe } from './probes.js'
 import { memorySalience } from './decay.js'
 import type { MemoryContextBase } from './context.js'
 import type { MemoryEventHub } from './events.js'
@@ -115,7 +116,19 @@ export function registerCurationSchedule(
       const llm = typeof ctx.get === 'function' && ctx.get('llm') !== undefined
         ? await summarizeCurationWithLlm(ctx, store, payload)
         : undefined
-      if (llm !== undefined) payload.llmSummary = llm.text
+      // 只有真正拿到摘要才写入；llm.error 存在时 text 通常为空，
+      // 写进去会让报告显示"摘要已生成"却没有任何内容。
+      if (llm !== undefined && llm.error === undefined) payload.llmSummary = llm.text
+      if (llm?.probe !== undefined) {
+        await createProbe(store, {
+          question: llm.probe.question,
+          reason: llm.probe.reason,
+          source: 'curation',
+          context: buildProbeEvidence(payload, items),
+        }).catch(error => {
+          console.error('[dsh-evolution-flywheel] curation probe failed:', error)
+        })
+      }
       const created = await store.appendSuggested(`整理报告：${payload.summary}`, 'curation_report')
       if (created === undefined) return
       const updated = await store.update(created.id, {
@@ -126,7 +139,9 @@ export function registerCurationSchedule(
         trace: [
           payload.summary,
           ...(payload.roles ?? []).map(role => `${role.name}：${role.summary}`),
-          ...(llm === undefined ? [] : ['AI 审查摘要已生成']),
+          ...(llm === undefined
+            ? []
+            : [llm.error === undefined ? 'AI 审查摘要已生成' : `AI 审查摘要失败：${llm.error}`]),
           ...payload.risks,
         ].slice(0, 10),
       })

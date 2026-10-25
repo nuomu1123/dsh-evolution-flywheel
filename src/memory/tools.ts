@@ -5,7 +5,7 @@
  * Web UI 调用。两者都只操作插件自己的 JSONL 文件。
  */
 import type { ToolDefinitionLike } from '../index.js'
-import type { MemoryRecord, MemoryStore } from './store.js'
+import type { MemoryRecord, MemoryStore, MemoryType } from './store.js'
 
 export interface MemoryToolContext {
   effect(callback: () => () => void): unknown
@@ -71,10 +71,14 @@ export function memorySearchTool(store: MemoryStore): ToolDefinitionLike {
       render: renderJson,
     },
     async execute(args: unknown): Promise<MemoryRecord[]> {
-      const record = (args ?? {}) as { query?: unknown; limit?: unknown }
+      const record = (args ?? {}) as { query?: unknown; limit?: unknown; type?: unknown }
       const query = typeof record.query === 'string' ? record.query : ''
       const limit = typeof record.limit === 'number' && Number.isFinite(record.limit) ? record.limit : 10
-      return store.search(query, limit)
+      // 类型过滤是可选的：只有传了合法类型才启用，避免模型乱传导致空结果。
+      const requested = typeof record.type === 'string' ? record.type.trim() : ''
+      const known: readonly MemoryType[] = ['fact', 'preference', 'skill_error_fix', 'conflict', 'speculative', 'meta_insight', 'mental_model', 'extraction_strategy', 'curation_report', 'cognitive_probe', 'cognitive_brief']
+      const options = (known as readonly string[]).includes(requested) ? { type: requested as MemoryType } : {}
+      return store.search(query, limit, options)
     },
   }
 }
@@ -184,6 +188,10 @@ export function memoryProbeTool(store: MemoryStore): ToolDefinitionLike {
       const item = await store.update(id, {
         verifiedAt: now,
         confidence: nextConfidence,
+        // 探针验证成立 = 这条排错经验的解法被现实检验过。
+        ...(verified && typeof current.resolution === 'string' && current.resolution.trim() !== ''
+          ? { resolutionSource: 'verified' as const }
+          : {}),
         trace: [
           ...(current.trace ?? []),
           `探针（${now}）：${hypothesis} → ${verified ? '验证成立' : '被现实推翻'}；结果：${evidence.slice(0, 200)}`,
@@ -206,6 +214,7 @@ export function memoryUpdateResolutionTool(store: MemoryStore): ToolDefinitionLi
       properties: {
         id: { type: 'string', description: 'The memory id to update.' },
         resolution: { type: 'string', description: 'The new resolution text; empty clears it.' },
+        verified: { type: 'boolean', description: 'true when this fix is confirmed by a human or a real reproduction; defaults to false (inferred).' },
       },
       required: ['id', 'resolution'],
       additionalProperties: false,
@@ -215,17 +224,66 @@ export function memoryUpdateResolutionTool(store: MemoryStore): ToolDefinitionLi
       render: renderJson,
     },
     async execute(args: unknown): Promise<{ ok: true; id: string; item: unknown }> {
-      const record = (args ?? {}) as { id?: unknown; resolution?: unknown }
+      const record = (args ?? {}) as { id?: unknown; resolution?: unknown; verified?: unknown }
       const id = typeof record.id === 'string' ? record.id.trim() : ''
       const resolution = typeof record.resolution === 'string' ? record.resolution : ''
       if (id === '') throw new Error('memory_update_resolution requires a non-empty id')
-      const item = await store.setResolution(id, resolution)
+      // verified=true 表示这条解法已被人类确认或实测过，recall 会据此改写措辞。
+      const item = await store.setResolution(id, resolution, record.verified === true ? 'verified' : 'inferred')
       if (item === undefined) throw new Error('memory_update_resolution: memory not found')
       return { ok: true, id, item }
     },
   }
 }
 
+/**
+ * 主动沉淀：把「对话中得出的结论」写进记忆。
+ *
+ * 为什么需要它：错误捕获只覆盖「工具失败」，而像「禁用带客户端半的插件后必须重启」
+ * 这种平台行为知识、以及用户的偏好/决策结论，都不是工具错误，靠自动捕获永远进不了库
+ * （2026-10-25 真实使用反馈的 P1-3）。
+ */
+export function memoryRememberTool(store: MemoryStore): ToolDefinitionLike {
+  return {
+    name: 'memory_remember',
+    description: 'Persist one conclusion as a memory (platform behaviour, troubleshooting conclusion, user preference or decision). Use this for knowledge that did NOT come from a tool failure — those are captured automatically. Returns { ok, id, item } or { ok: false, reason }.',
+    parameters: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'The conclusion to remember, 1-2000 characters.' },
+        type: { type: 'string', description: 'Memory type; defaults to fact. One of: fact / preference / skill_error_fix / mental_model / meta_insight / extraction_strategy.' },
+        context: { type: 'string', description: 'Evidence or provenance: how it was verified, where it came from.' },
+        approved: { type: 'boolean', description: 'true when already verified (reproduced, confirmed by tests); defaults to false (suggested, waiting for human decision).' },
+      },
+      required: ['content'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: renderJson,
+    },
+    async execute(args: unknown): Promise<unknown> {
+      const record = (args ?? {}) as { content?: unknown; type?: unknown; context?: unknown; approved?: unknown }
+      const content = typeof record.content === 'string' ? record.content.trim().slice(0, 2000) : ''
+      if (content === '') throw new Error('memory_remember requires non-empty content')
+      const requested = typeof record.type === 'string' ? record.type.trim() : ''
+      const known: readonly MemoryType[] = ['fact', 'preference', 'skill_error_fix', 'mental_model', 'meta_insight', 'extraction_strategy']
+      const type: MemoryType = (known as readonly string[]).includes(requested) ? requested as MemoryType : 'fact'
+      const context = typeof record.context === 'string' ? record.context.trim().slice(0, 500) : ''
+      const created = await store.appendSuggested(content, type)
+      if (created === undefined) {
+        return { ok: false, reason: 'duplicate', message: '内容已存在（完全相同），未重复写入' }
+      }
+      const item = await store.update(created.id, {
+        ...(context === '' ? {} : { context }),
+        ...(record.approved === true ? { status: 'approved' as const } : {}),
+        origin: 'manual',
+        originDetail: '主动沉淀',
+      })
+      return { ok: true, id: created.id, item: item ?? created }
+    },
+  }
+}
 /** 注册工具；任一失败只写日志，不阻断其他工具。 */
 export function registerMemoryTools(ctx: MemoryToolContext, store: MemoryStore): void {
   for (const definition of [
@@ -234,6 +292,7 @@ export function registerMemoryTools(ctx: MemoryToolContext, store: MemoryStore):
     memoryDeleteTool(store),
     memoryApproveTool(store),
     memoryUpdateResolutionTool(store),
+    memoryRememberTool(store),
     memoryProbeTool(store),
   ]) {
     try {
