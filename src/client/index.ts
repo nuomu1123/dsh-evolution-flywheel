@@ -2754,7 +2754,9 @@ function MemoryExplorerPage() {
                     : item.type === 'skill_error_fix'
                       ? {
                         ...memoryStyles.card,
-                        borderColor: '#d97706',
+                        // 类型用左侧色条区分，不再整圈琥珀：琥珀要留给「断连 / staged」这类警示（P2-6）。
+                        borderLeftColor: '#d97706',
+                        borderLeftWidth: '3px',
                         backgroundColor: item.status === 'approved'
                           ? 'rgba(21, 128, 61, 0.06)'
                           : 'rgba(249, 115, 22, 0.12)',
