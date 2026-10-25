@@ -12,6 +12,11 @@ dist/
 *.log
 dma_surfing.log
 
+# local audit / analysis reports (not part of the published package)
+reports/
+# npm pack / publish artifacts
+*.tgz
+
 # secrets and local configuration
 .env
 .env.*

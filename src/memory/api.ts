@@ -202,6 +202,7 @@ export async function handleMemoryApi(
       if (rule !== undefined) events.publish({ type: 'memory:added', item: rule })
       appendAudit('memory.model.distill', {
         id: item.id,
+        flywheel: 'abstract,transfer',
         ...(strategy === undefined ? {} : { strategy: strategy.id }),
         ...(rule === undefined ? {} : { rule: rule.id }),
       })
@@ -282,7 +283,7 @@ export async function handleMemoryApi(
       })
       const report = updated ?? created
       events.publish({ type: 'memory:added', item: report })
-      appendAudit('memory.curation.run', { id: report.id, trigger: 'manual' })
+      appendAudit('memory.curation.run', { id: report.id, trigger: 'manual', flywheel: 'feedback' })
       sendJson(res, 200, {
         ok: true,
         report,
@@ -533,6 +534,7 @@ export async function handleMemoryApi(
       appendAudit('dma.run', {
         discipline: discipline ?? 'auto',
         insights: items.length,
+        flywheel: 'search,comprehend,abstract,transfer,practice',
       })
       sendJson(res, 200, { ok: true, items, item: items[0] })
       return
@@ -773,7 +775,12 @@ export async function handleMemoryApi(
           details.push({ id: item.id, result: `error: ${error instanceof Error ? error.message : String(error)}` })
         }
       }
-      appendAudit('memory.review.retry', { candidates: candidates.length, succeeded, halted })
+      appendAudit('memory.review.retry', {
+        candidates: candidates.length,
+        succeeded,
+        halted,
+        flywheel: 'practice',
+      })
       sendJson(res, 200, {
         ok: true,
         candidates: candidates.length,

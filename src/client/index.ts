@@ -16,7 +16,9 @@ import type { ClarifyAnalysis, ClarifyAnswers } from '../clarify/types.js'
 import {
   buildDebateBubbles,
   buildTimeline,
+  classifyStreamFrame,
   debateVerdictText,
+  describeStreamLink,
   hasDebateRecord,
   isMetaItem,
   parseMetaInsight,
@@ -26,10 +28,13 @@ import {
   auditSummary,
   memoryStatusLabel,
   memoryTypeLabel,
+  shouldReconnectStream,
+  STREAM_WATCHDOG_MS,
   tabCounts,
   normalizeMemoryStatus,
   type FilterTab,
   type MemoryItem,
+  type StreamLinkState,
 } from './logic.js'
 import { memorySalience, perceptionLabel } from '../memory/decay.js'
 import { parseCurationPayload } from '../memory/curation-shared.js'
@@ -764,8 +769,8 @@ const memoryStyles = {
     fontSize: '11px',
   },
   badgeMeta: {
-    border: '1px solid #9333ea',
-    color: '#9333ea',
+    border: '1px solid #2563eb',
+    color: '#2563eb',
     borderRadius: '999px',
     padding: '1px 7px',
     fontSize: '11px',
@@ -774,10 +779,10 @@ const memoryStyles = {
     display: 'flex',
     flexDirection: 'column',
     gap: '6px',
-    border: '1px solid rgba(147, 51, 234, 0.28)',
+    border: '1px solid rgba(37, 99, 235, 0.30)',
     borderRadius: '10px',
     padding: '8px 10px',
-    background: 'rgba(147, 51, 234, 0.045)',
+    background: 'rgba(37, 99, 235, 0.05)',
   },
   insightPreamble: {
     fontSize: '10px',
@@ -789,7 +794,7 @@ const memoryStyles = {
     display: 'flex',
     flexDirection: 'column',
     gap: '2px',
-    borderLeft: '2px solid rgba(147, 51, 234, 0.45)',
+    borderLeft: '2px solid rgba(37, 99, 235, 0.45)',
     paddingLeft: '8px',
   },
   insightStepHead: {
@@ -802,14 +807,14 @@ const memoryStyles = {
     fontSize: '10px',
     fontWeight: 700,
     letterSpacing: '0.04em',
-    color: '#9333ea',
+    color: '#2563eb',
     opacity: 0.85,
   },
   insightTag: {
     fontSize: '11px',
     fontWeight: 700,
-    color: '#9333ea',
-    background: 'rgba(147, 51, 234, 0.12)',
+    color: '#2563eb',
+    background: 'rgba(37, 99, 235, 0.12)',
     borderRadius: '4px',
     padding: '1px 5px',
   },
@@ -974,6 +979,29 @@ const memoryStyles = {
   errorText: {
     flex: '1 1 240px',
     color: '#d92d20',
+    fontSize: '12px',
+    lineHeight: 1.5,
+  },
+  linkBanner: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    flexWrap: 'wrap',
+    border: '1px solid rgba(217, 119, 6, 0.55)',
+    borderRadius: '8px',
+    padding: '6px 10px',
+    background: 'rgba(217, 119, 6, 0.08)',
+  },
+  linkDot: {
+    width: '8px',
+    height: '8px',
+    borderRadius: '999px',
+    background: '#d97706',
+    flex: 'none',
+  },
+  linkText: {
+    flex: '1 1 240px',
+    color: 'var(--dsw-alias-text-warning, #b45309)',
     fontSize: '12px',
     lineHeight: 1.5,
   },
@@ -1410,6 +1438,9 @@ function MemoryExplorerPage() {
   const pageRef = React.useRef(null)
   const loadSeqRef = React.useRef(0)
   const [pageVisible, setPageVisible] = React.useState(false)
+  // 事件流韧性：连接状态与重建令牌。断连只降级成琥珀色状态条，不再占用红色错误块。
+  const [linkState, setLinkState] = React.useState('connecting' as StreamLinkState)
+  const [streamNonce, setStreamNonce] = React.useState(0)
   React.useEffect(() => {
     if (typeof IntersectionObserver === 'undefined') {
       setPageVisible(true)
@@ -1494,10 +1525,11 @@ function MemoryExplorerPage() {
     }
   }
 
-  const load = async (signal?: AbortSignal) => {
+  const load = async (signal?: AbortSignal, silent = false) => {
     const sequence = ++loadSeqRef.current
-    setLoading(true)
-    setError('')
+    // 静默对账：断连重连后补齐漏掉的事件，但不闪「加载中」、不清掉用户正在看的错误提示。
+    if (!silent) setLoading(true)
+    if (!silent) setError('')
     try {
       const response = await fetch(`${MEMORY_API}/list`, { signal: signal ?? null, cache: 'no-store' })
       const body = await response.json()
@@ -1562,11 +1594,17 @@ function MemoryExplorerPage() {
 
   React.useEffect(() => {
     if (!pageVisible) return
-    const source = new EventSource(`${MEMORY_API}/events`)
-    const upsert = (raw: MemoryItem) => {
+    let disposed = false
+    let source: EventSource | undefined
+    // 活跃时间由心跳帧与业务帧共同刷新；用闭包变量，避免每次 setState 重建连接。
+    let lastFrameAt = Date.now()
+    let failureStreak = 0
+
+    const upsert = (raw: unknown) => {
       if (raw === null || typeof raw !== 'object') return
-      if (typeof raw.id !== 'string' || typeof raw.content !== 'string') return
-      const item: MemoryItem = { ...raw, status: normalizeMemoryStatus(raw.status) }
+      const candidate = raw as MemoryItem
+      if (typeof candidate.id !== 'string' || typeof candidate.content !== 'string') return
+      const item: MemoryItem = { ...candidate, status: normalizeMemoryStatus(candidate.status) }
       setItems((previous: MemoryItem[]) => {
         const index = previous.findIndex(existing => existing.id === item.id)
         if (index < 0) return [item, ...previous]
@@ -1575,20 +1613,60 @@ function MemoryExplorerPage() {
         return next
       })
     }
-    source.onmessage = (event: MessageEvent<string>) => {
-      try {
-        const payload = JSON.parse(event.data)
-        if (payload?.type === 'memory:added' && payload.item !== undefined) upsert(payload.item)
-        else if (payload?.type === 'memory:updated' && payload.item !== undefined) upsert(payload.item)
-        else if (payload?.type === 'memory:removed' && typeof payload.id === 'string') {
-          setItems((previous: MemoryItem[]) => previous.filter(item => item.id !== payload.id))
+
+    const connect = (): void => {
+      if (disposed) return
+      const next = new EventSource(`${MEMORY_API}/events`)
+      source = next
+      next.onopen = () => {
+        if (disposed || source !== next) return
+        failureStreak = 0
+        lastFrameAt = Date.now()
+        setLinkState('live')
+        // 断连期间的事件不会补发：重连成功后静默对账一次，避免界面停留在旧数据。
+        void load(undefined, true)
+      }
+      next.onerror = () => {
+        if (disposed || source !== next) return
+        failureStreak += 1
+        setLinkState(failureStreak >= 3 ? 'offline' : 'reconnecting')
+      }
+      next.onmessage = (event: MessageEvent<string>) => {
+        if (disposed || source !== next) return
+        const frame = classifyStreamFrame(event.data)
+        if (frame.kind === 'invalid') return
+        lastFrameAt = Date.now()
+        if (frame.kind === 'ping') return
+        const payload = frame.payload
+        const removedId = typeof payload.id === 'string' ? payload.id : ''
+        if (payload.type === 'memory:added' && payload.item !== undefined) upsert(payload.item)
+        else if (payload.type === 'memory:updated' && payload.item !== undefined) upsert(payload.item)
+        else if (payload.type === 'memory:removed' && removedId !== '') {
+          setItems((previous: MemoryItem[]) => previous.filter(item => item.id !== removedId))
         }
-      } catch {
-        // 忽略格式异常的事件帧，SSE 连接继续。
       }
     }
-    return () => source.close()
-  }, [pageVisible])
+
+    connect()
+    // 看门狗：浏览器 EventSource 在"假活"连接上 readyState 仍是 OPEN，只能靠帧间隔判死链。
+    const watchdog = setInterval(() => {
+      if (disposed) return
+      if (!shouldReconnectStream(lastFrameAt, Date.now())) return
+      lastFrameAt = Date.now()
+      setLinkState('reconnecting')
+      source?.close()
+      source = undefined
+      connect()
+    }, STREAM_WATCHDOG_MS)
+
+    return () => {
+      disposed = true
+      clearInterval(watchdog)
+      source?.close()
+      source = undefined
+    }
+    // load 每次渲染都是新闭包，只做静默对账，不列入依赖以免连接被反复重建。
+  }, [pageVisible, streamNonce])
 
   const filtered = React.useMemo(() => {
     const keyword = query.trim().toLowerCase()
@@ -2270,6 +2348,21 @@ function MemoryExplorerPage() {
         onClick: () => setDensity(level),
       }, level === 'compact' ? '紧凑' : level === 'standard' ? '标准' : '大')),
     ]),
+    // 断连兜底：琥珀色状态条，不占用红色错误块，也不阻塞列表浏览。
+    describeStreamLink(linkState) !== ''
+      ? h('div', { key: 'stream-link', style: memoryStyles.linkBanner }, [
+        h('span', { key: 'dot', style: memoryStyles.linkDot }),
+        h('span', { key: 'text', style: memoryStyles.linkText }, describeStreamLink(linkState)),
+        linkState === 'offline'
+          ? h('button', {
+            key: 'reconnect',
+            type: 'button',
+            style: memoryStyles.button,
+            onClick: () => setStreamNonce((value: number) => value + 1),
+          }, '重新连接')
+          : null,
+      ])
+      : null,
     error !== ''
       ? h('div', { key: 'error', style: memoryStyles.errorBox }, [
         h('span', { key: 'text', style: memoryStyles.errorText }, error),
@@ -2332,15 +2425,15 @@ function MemoryExplorerPage() {
                   ...memoryStyles.card,
                   borderColor: '#2563eb',
                   ...(item.type === 'meta_insight'
-                    ? { borderLeftColor: '#9333ea', borderLeftWidth: '3px' }
+                    ? { borderLeftColor: '#1d4ed8', borderLeftWidth: '3px' }
                     : {}),
                   backgroundColor: 'rgba(37, 99, 235, 0.08)',
                 }
                 : item.type === 'meta_insight'
                   ? {
                     ...memoryStyles.card,
-                    borderColor: '#9333ea',
-                    backgroundColor: 'rgba(147, 51, 234, 0.07)',
+                    borderColor: '#2563eb',
+                    backgroundColor: 'rgba(37, 99, 235, 0.07)',
                   }
                   : busy
                     ? {

@@ -20,6 +20,27 @@ export interface ProbeInput {
   context?: unknown
 }
 
+/**
+ * 客服式套话：不携带任何新信息，只是在征求许可（"需要我帮你整理吗"）。
+ * 主体性原则要求探针必须带跨学科类比、新规律或具体分歧，命中即拒绝落库。
+ */
+const SERVICE_TONE_PATTERNS: readonly RegExp[] = [
+  /需要我(帮你|为你|来|继续|整理|处理|做)/u,
+  /要不要我(帮你|为你|来|继续|整理|处理|做)/u,
+  /(你|您)要不要我/u,
+  /是否需要我/u,
+  /我可以(帮你|为你|继续|整理|处理)/u,
+  /(你|您)(希望|想让我)/u,
+  /(请|麻烦)(你|您)?(告诉我|指示)(要|需要|下一步)/u,
+]
+
+/** 判断一句探针是否退化成了客服式提问。 */
+export function isServiceToneQuestion(question: string): boolean {
+  const text = question.trim()
+  if (text === '') return false
+  return SERVICE_TONE_PATTERNS.some(pattern => pattern.test(text))
+}
+
 /** 创建一条待人类回答的探针；同名且未跳过的探针不重复创建。 */
 export async function createProbe(
   store: MemoryStore,
@@ -27,6 +48,8 @@ export async function createProbe(
 ): Promise<MemoryRecord | undefined> {
   const question = input.question.trim().slice(0, 500)
   if (question === '') return undefined
+  // 主体性守卫：客服式套话直接不落库，避免探针退化成"征求许可"。
+  if (isServiceToneQuestion(question)) return undefined
   const items = await store.list()
   const existing = items.find(item =>
     item.type === 'cognitive_probe'

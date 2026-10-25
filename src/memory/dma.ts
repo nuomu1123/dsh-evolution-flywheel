@@ -634,9 +634,12 @@ export class DmaRunner {
       const polarized = exploration.insights.some(text =>
         /(分歧|矛盾|冲突|两种|一方面|另一方面|无法收敛|相反|对立)/u.test(text))
       if (polarized) {
+        // 主体性要求：探针必须携带具体分歧（新信息），而不是空泛地问"你倾向哪种"。
+        const evidence = (exploration.insights[0] ?? '').replace(/\s+/gu, ' ').slice(0, 140)
+        const excerpt = evidence === '' ? '（模型未给出可摘录的分歧片段）' : evidence
         await createProbe(this.store, {
-          question: `关于「${exploration.topic ?? exploration.title}」，外部证据出现分歧。你更倾向哪种判断？`,
-          reason: `离线漫游（${exploration.discipline ?? '跨学科'}）的信息呈两极分化，无法收敛：${(exploration.insights[0] ?? '').slice(0, 120)}`,
+          question: `我在「${exploration.discipline ?? '跨学科'}」视角下查到互相矛盾的证据：${excerpt}。按跨学科经验，这类分歧通常来自前提假设不同——我们的场景更接近哪一种前提？`,
+          reason: `离线漫游（${exploration.discipline ?? '跨学科'}）的信息呈两极分化，无法收敛：${excerpt}`,
           source: 'dma',
           ...(items[0] === undefined ? {} : { sourceId: items[0].id }),
         })

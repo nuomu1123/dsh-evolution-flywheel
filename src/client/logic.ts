@@ -448,3 +448,58 @@ export function tabCounts(items: readonly MemoryItem[]): Record<FilterTab, numbe
   }
   return counts
 }
+
+/* ------------------------------------------------------------------ */
+/* 事件流韧性：SSE 心跳、断连看门狗与状态文案                          */
+/* ------------------------------------------------------------------ */
+
+/** 看门狗检查间隔：15s 检查一次是否还活着。 */
+export const STREAM_WATCHDOG_MS = 15_000
+/** 超过 45s 没有任何帧（含服务端心跳）就判定死链，必须显式重建。 */
+export const STREAM_STALE_MS = 45_000
+
+/** 事件流连接状态；offline 只代表实时推送不可用，列表仍可浏览。 */
+export type StreamLinkState = 'connecting' | 'live' | 'reconnecting' | 'offline'
+
+/** 一帧 SSE 数据的语义分类。 */
+export type StreamFrame =
+  | { kind: 'ping' }
+  | { kind: 'event'; payload: Record<string, unknown> }
+  | { kind: 'invalid' }
+
+/**
+ * 解析一帧 SSE 数据。
+ * 心跳帧只用于刷新活跃时间，绝不能进 upsert 流程；坏帧直接丢弃但不断流。
+ */
+export function classifyStreamFrame(data: string): StreamFrame {
+  if (typeof data !== 'string' || data.trim() === '') return { kind: 'invalid' }
+  try {
+    const payload: unknown = JSON.parse(data)
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+      return { kind: 'invalid' }
+    }
+    const record = payload as Record<string, unknown>
+    if (record.type === 'ping') return { kind: 'ping' }
+    return { kind: 'event', payload: record }
+  } catch {
+    return { kind: 'invalid' }
+  }
+}
+
+/** 看门狗判定：超过 staleMs 没有任何帧（含心跳）就重建连接。 */
+export function shouldReconnectStream(
+  lastFrameAt: number,
+  now: number,
+  staleMs: number = STREAM_STALE_MS,
+): boolean {
+  if (!Number.isFinite(lastFrameAt) || !Number.isFinite(now)) return false
+  return now - lastFrameAt > staleMs
+}
+
+/** 连接状态文案；live 不打扰用户（返回空串），其余给一条可读的兜底说明。 */
+export function describeStreamLink(state: StreamLinkState): string {
+  if (state === 'live') return ''
+  if (state === 'connecting') return '正在连接事件流…'
+  if (state === 'reconnecting') return '事件流中断，正在自动重连；列表仍可浏览，恢复后会自动对账'
+  return '事件流已断开：实时更新暂不可用，可点「重新连接」或刷新页面'
+}
