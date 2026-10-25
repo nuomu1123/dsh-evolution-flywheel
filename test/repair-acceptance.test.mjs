@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { appendAudit, readAudit } from '../lib/audit.js'
 import { buildDigest } from '../lib/memory/recall.js'
 import { sanitizeText } from '../lib/memory/sanitize.js'
+import { buildSkillCandidate } from '../lib/memory/skill-extractor.js'
 import { memoryRememberTool } from '../lib/memory/tools.js'
 import { MemoryStore } from '../lib/memory/store.js'
 import { summarizeUsage } from '../lib/memory/usage.js'
@@ -245,4 +246,12 @@ test('检索：英文词边界、全半角归一、AND 空时放宽 OR', async (
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('错误签名：只有退出码时补上命令首词（不再 8 条失败共用一个签名）', () => {
+  const candidate = buildSkillCandidate({
+    error: { name: 'ToolError', message: '[exit code: 1]' },
+    context: '工具 pwsh 执行失败；参数摘要：{"command":"npm run build && npm test"}',
+  })
+  assert.match(candidate.errorSignature, /npm run build/u, '签名应带命令首词以增加区分度')
 })

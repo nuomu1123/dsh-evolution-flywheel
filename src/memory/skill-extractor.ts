@@ -65,6 +65,21 @@ function keyStackLines(stack: string): string[] {
 }
 
 /**
+ * 从参数摘要里提取命令首词，给「只有退出码」的错误补一点区分度。
+ * 实测：8 条完全不同的失败共享 `ToolError: [exit code: 1]` 一个签名，无法聚类复用。
+ */
+function commandHint(context: string): string {
+  const match = context.match(/"command"\s*:\s*"((?:[^"\\]|\\.){0,200})"/u)
+  if (match === null) return ''
+  const command = (match[1] ?? '')
+    .replace(/\\"/gu, '"')
+    .replace(/\s+/gu, ' ')
+    .trim()
+  if (command === '') return ''
+  return command.split(' ').slice(0, 3).join(' ').slice(0, 60)
+}
+
+/**
  * 从任意错误构造结构化候选记忆。
  * @param input 原始错误、任务上下文，以及已知的解决办法。
  * @returns 可直接写入 MemoryStore 的候选。
@@ -76,9 +91,12 @@ export function buildSkillCandidate(input: {
 }): SkillCandidate {
   const parts = errorParts(input.error)
   const stackKey = keyStackLines(parts.stack)
+  const firstLine = parts.message.split('\n')[0]?.trim() ?? parts.message
   // 错误消息与上下文都可能夹带 URL token / API Key / 邮箱，落盘前统一脱敏。
+  // 命令失败只留下 `[exit code: N]` 时，签名没有区分度：补上命令首词（P1-6）。
+  const hint = /^\[exit code:\s*\d+\]\.?$/u.test(firstLine) ? commandHint(input.context) : ''
   const signature = redactText(
-    `${parts.name}: ${parts.message.split('\n')[0]?.trim() ?? parts.message}`,
+    hint === '' ? `${parts.name}: ${firstLine}` : `${parts.name}: ${firstLine} (${hint})`,
     300,
   )
   const fingerprint = createHash('sha256')
@@ -289,14 +307,23 @@ export function registerSkillExtraction(
         // 它不是一次新的失败，而是一次已记录失败的"剪枝版"；
         // 若不当成重复处理，同一错误会被记成截断版第二条（fingerprint 不同，去重挡不住）。
         if (messageText.includes('[... tool result middle pruned ...]')) return
-        const failedByContent = /\[exit code:\s*[1-9]\d*\]|(?:^|\n)\s*(?:Error|error|Cannot find|Exception|Traceback|ModuleNotFoundError|TypeError|ReferenceError)\b/u.test(messageText)
+        // 内容兜底只认强信号：退出码单独占最后一行，或输出很短且最后一行以错误名开头。
+        // 旧规则「任意行出现 Error / [exit code: 1]」会把含 ToolError 字样的**正常诊断输出**
+        // 也当失败捕获（P1-5：我自己的 `重复错误签名组: ToolError: [exit code: 1]` 就被误记）。
+        const lines = messageText.trim().split('\n')
+        const lastLine = lines.at(-1)?.trim() ?? ''
+        const failedByContent = /^\[exit code:\s*[1-9]\d*\]$/u.test(lastLine)
+          || (lines.length <= 6
+            && /^(?:Error|TypeError|ReferenceError|ModuleNotFoundError|Exception|Traceback|Cannot find)\b/u.test(lastLine))
         if (message?.isError !== true && data?.error === undefined && !failedByContent) return
         const callId = message?.toolCallId ?? data?.callId
         const bySession = calls.get(id)
         const call = callId === undefined ? undefined : bySession?.get(callId)
         if (callId !== undefined) bySession?.delete(callId)
         const errorName = data?.error?.name ?? 'ToolError'
-        const errorText = data?.error?.reason?.trim() || diagnosticLine(messageText)
+        // 上游有时只给占位（如 `String []`）：太短就回退到输出里的诊断行，否则审阅无法判断（P1-4）。
+        const reasonText = data?.error?.reason?.trim() ?? ''
+        const errorText = reasonText.length >= 12 ? reasonText : (diagnosticLine(messageText) || reasonText || lastLine)
         const candidate = buildSkillCandidate({
           error: { name: errorName, message: errorText, stack: messageText },
           context: call === undefined ? '工具调用失败' : `工具 ${call.name} 执行失败；参数摘要：${redactArgs(call.args, 200)}`,
