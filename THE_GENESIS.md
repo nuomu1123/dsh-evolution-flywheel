@@ -60,7 +60,7 @@
 
 ### 7.1 共享现实（Shared Reality）
 
-- 母子 Agent 共用同一个全局记忆池：`MemoryRecord.scope = 'global'`，每次写入立即广播（`memory:added / updated / removed`）。
+- 母子 Agent 共用同一个全局记忆池：`MemoryRecord.scope = 'global'`；主干写入（错误捕获、漫游结果、审阅决定、整理报告）通过 `memory:added / updated / removed` 立即广播，探针创建走下一次列表拉取。
 - 没有信息孤岛：子 Agent 的探索结果对母 Agent 立即可见，母 Agent 的裁决策略也能被子 Agent 直接调用。
 - 判据：任何一次写入，另一侧不需要重启、不需要额外同步就能读到。
 

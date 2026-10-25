@@ -8,6 +8,7 @@
 import type { MemoryContextBase } from './context.js'
 import type { MemoryEventHub } from './events.js'
 import type { MemoryRecord, MemoryStore } from './store.js'
+import { appendAudit } from '../audit.js'
 
 export type ProbeSource = 'model-distill' | 'dma' | 'manual' | 'curation'
 
@@ -23,15 +24,25 @@ export interface ProbeInput {
 /**
  * 客服式套话：不携带任何新信息，只是在征求许可（"需要我帮你整理吗"）。
  * 主体性原则要求探针必须带跨学科类比、新规律或具体分歧，命中即拒绝落库。
+ *
+ * 注意：模式要精确到"许可征求"，不能误伤带实质信息的问句
+ * （例如"你希望「分歧」保持开放还是收敛？"、"请告诉我需要哪种前提"都应放行）。
  */
 const SERVICE_TONE_PATTERNS: readonly RegExp[] = [
+  // 带"我"的许可征求
   /需要我(帮你|为你|来|继续|整理|处理|做)/u,
   /要不要我(帮你|为你|来|继续|整理|处理|做)/u,
   /(你|您)要不要我/u,
   /是否需要我/u,
-  /我可以(帮你|为你|继续|整理|处理)/u,
-  /(你|您)(希望|想让我)/u,
-  /(请|麻烦)(你|您)?(告诉我|指示)(要|需要|下一步)/u,
+  // 自荐式动作
+  /我帮你(把|整理|处理|做|跑|看看|合并|归档)/u,
+  /要我(帮你|为你|把|做|整理|处理|合并)/u,
+  /我可以(帮你|为你)(整理|处理|做|看)/u,
+  // 只征求下一步指令（没有具体对象）
+  /(你|您)希望我/u,
+  // 文档明确列为禁止的短问句变体（无"我"前缀）
+  /(要不要|要)继续/u,
+  /^继续吗[?？]?$/u,
 ]
 
 /** 判断一句探针是否退化成了客服式提问。 */
@@ -48,8 +59,15 @@ export async function createProbe(
 ): Promise<MemoryRecord | undefined> {
   const question = input.question.trim().slice(0, 500)
   if (question === '') return undefined
-  // 主体性守卫：客服式套话直接不落库，避免探针退化成"征求许可"。
-  if (isServiceToneQuestion(question)) return undefined
+  // 主体性守卫：客服式套话不落库，但要留下审计痕迹——否则没人知道"为什么这次没探针"。
+  if (isServiceToneQuestion(question)) {
+    appendAudit('memory.probe.rejected', {
+      source: input.source,
+      question: question.slice(0, 120),
+      reason: 'service-tone',
+    })
+    return undefined
+  }
   const items = await store.list()
   const existing = items.find(item =>
     item.type === 'cognitive_probe'

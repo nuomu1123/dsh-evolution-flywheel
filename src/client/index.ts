@@ -28,12 +28,14 @@ import {
   auditSummary,
   memoryStatusLabel,
   memoryTypeLabel,
+  mergeSnapshotWithFrames,
   shouldReconnectStream,
   STREAM_WATCHDOG_MS,
   tabCounts,
   normalizeMemoryStatus,
   type FilterTab,
   type MemoryItem,
+  type StreamFrameRecord,
   type StreamLinkState,
 } from './logic.js'
 import { memorySalience, perceptionLabel } from '../memory/decay.js'
@@ -465,23 +467,6 @@ const memoryStyles = {
     borderRadius: '999px',
     padding: '1px 7px',
     fontSize: '11px',
-  },
-  metaInsight: {
-    border: '1px solid #a855f7',
-    backgroundColor: 'rgba(147, 51, 234, 0.14)',
-    borderRadius: '8px',
-    padding: '8px 10px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '3px',
-    fontSize: '12px',
-    lineHeight: 1.55,
-  },
-  metaInsightTitle: {
-    color: '#7e22ce',
-    fontWeight: 700,
-    fontSize: '11px',
-    letterSpacing: '0.02em',
   },
   debate: {
     borderLeft: '3px solid #dc2626',
@@ -1347,6 +1332,23 @@ function renderInsightCard(content: string, expanded: boolean, fontSize: string)
   ])
 }
 
+/** 帧日志上限：只保留最近 200 个 id 的对账依据，避免无限增长。 */
+const FRAME_LOG_LIMIT = 200
+
+/** 记录一条 SSE 帧给某个 id 留下的最新状态（供 mergeSnapshotWithFrames 使用）。 */
+function rememberFrame(
+  frames: Map<string, StreamFrameRecord>,
+  id: string,
+  record: StreamFrameRecord,
+): void {
+  frames.set(id, record)
+  if (frames.size <= FRAME_LOG_LIMIT) return
+  for (const key of frames.keys()) {
+    if (frames.size <= FRAME_LOG_LIMIT) break
+    frames.delete(key)
+  }
+}
+
 const WhaleMascot = React.memo(function WhaleMascot(props: { busy: boolean; error: boolean }) {
   const [tip, setTip] = React.useState('正在深度思考…')
   React.useEffect(() => {
@@ -1437,6 +1439,8 @@ function MemoryExplorerPage() {
   const [batchNotice, setBatchNotice] = React.useState('')
   const pageRef = React.useRef(null)
   const loadSeqRef = React.useRef(0)
+  // SSE 帧日志：静默对账时把「快照请求之后收到的帧」按 id 盖回快照，避免整表替换吞掉事件。
+  const frameLogRef = React.useRef(new Map<string, StreamFrameRecord>())
   const [pageVisible, setPageVisible] = React.useState(false)
   // 事件流韧性：连接状态与重建令牌。断连只降级成琥珀色状态条，不再占用红色错误块。
   const [linkState, setLinkState] = React.useState('connecting' as StreamLinkState)
@@ -1527,6 +1531,8 @@ function MemoryExplorerPage() {
 
   const load = async (signal?: AbortSignal, silent = false) => {
     const sequence = ++loadSeqRef.current
+    // 记录请求开始时间：快照之后收到的 SSE 帧要按 id 盖回快照，不能整表替换。
+    const startedAt = Date.now()
     // 静默对账：断连重连后补齐漏掉的事件，但不闪「加载中」、不清掉用户正在看的错误提示。
     if (!silent) setLoading(true)
     if (!silent) setError('')
@@ -1543,15 +1549,17 @@ function MemoryExplorerPage() {
         }))
         : []
       if (sequence !== loadSeqRef.current) return
-      setItems(next)
+      // 整表替换会吞掉对账窗口内刚到达的 SSE 帧，必须按 id 合并（见 mergeSnapshotWithFrames）。
+      setItems(mergeSnapshotWithFrames(next, frameLogRef.current, startedAt))
       if (typeof body.health?.writeQueue === 'string') {
         setWriteQueue(body.health.writeQueue)
       }
     } catch (caught) {
       if ((caught as Error)?.name === 'AbortError') return
-      setError((caught as Error)?.message || '加载失败')
+      // 静默对账失败不弹红色错误块：后台动作不该把用户正在看的界面变红。
+      if (!silent) setError((caught as Error)?.message || '加载失败')
     } finally {
-      if (signal?.aborted !== true) setLoading(false)
+      if (!silent && signal?.aborted !== true) setLoading(false)
     }
   }
 
@@ -1599,12 +1607,19 @@ function MemoryExplorerPage() {
     // 活跃时间由心跳帧与业务帧共同刷新；用闭包变量，避免每次 setState 重建连接。
     let lastFrameAt = Date.now()
     let failureStreak = 0
+    // 看门狗重建次数：挂起型死链没有 onerror，只能靠计数升级成 offline，否则按钮永不出现。
+    let watchdogRebuilds = 0
+    // 只有"断过"才需要对账；手动点重连（streamNonce > 0）也视为断过。
+    let hadDisconnect = streamNonce > 0
+    const controller = new AbortController()
 
     const upsert = (raw: unknown) => {
       if (raw === null || typeof raw !== 'object') return
       const candidate = raw as MemoryItem
       if (typeof candidate.id !== 'string' || typeof candidate.content !== 'string') return
       const item: MemoryItem = { ...candidate, status: normalizeMemoryStatus(candidate.status) }
+      // 记下"这一帧发生在什么时候"，静默对账时用它盖回快照。
+      rememberFrame(frameLogRef.current, item.id, { at: Date.now(), item })
       setItems((previous: MemoryItem[]) => {
         const index = previous.findIndex(existing => existing.id === item.id)
         if (index < 0) return [item, ...previous]
@@ -1621,15 +1636,19 @@ function MemoryExplorerPage() {
       next.onopen = () => {
         if (disposed || source !== next) return
         failureStreak = 0
+        watchdogRebuilds = 0
         lastFrameAt = Date.now()
         setLinkState('live')
-        // 断连期间的事件不会补发：重连成功后静默对账一次，避免界面停留在旧数据。
-        void load(undefined, true)
+        // 断连期间的事件不会补发：只对"断过"的连接静默对账（首连由初始 load 负责，避免并发两次）。
+        if (hadDisconnect) void load(controller.signal, true)
       }
       next.onerror = () => {
         if (disposed || source !== next) return
+        hadDisconnect = true
         failureStreak += 1
-        setLinkState(failureStreak >= 3 ? 'offline' : 'reconnecting')
+        // 手动重连再次失败时保持 offline，否则按钮会消失、用户得再等两分钟。
+        setLinkState((previous: StreamLinkState) =>
+          failureStreak >= 3 || previous === 'offline' ? 'offline' : 'reconnecting')
       }
       next.onmessage = (event: MessageEvent<string>) => {
         if (disposed || source !== next) return
@@ -1642,6 +1661,7 @@ function MemoryExplorerPage() {
         if (payload.type === 'memory:added' && payload.item !== undefined) upsert(payload.item)
         else if (payload.type === 'memory:updated' && payload.item !== undefined) upsert(payload.item)
         else if (payload.type === 'memory:removed' && removedId !== '') {
+          rememberFrame(frameLogRef.current, removedId, { at: Date.now(), removed: true })
           setItems((previous: MemoryItem[]) => previous.filter(item => item.id !== removedId))
         }
       }
@@ -1653,7 +1673,11 @@ function MemoryExplorerPage() {
       if (disposed) return
       if (!shouldReconnectStream(lastFrameAt, Date.now())) return
       lastFrameAt = Date.now()
-      setLinkState('reconnecting')
+      hadDisconnect = true
+      watchdogRebuilds += 1
+      // 纯挂起（无 onerror）永远不会累加 failureStreak，这里也要能升级成 offline。
+      setLinkState((previous: StreamLinkState) =>
+        previous === 'offline' || watchdogRebuilds >= 2 ? 'offline' : 'reconnecting')
       source?.close()
       source = undefined
       connect()
@@ -1662,6 +1686,7 @@ function MemoryExplorerPage() {
     return () => {
       disposed = true
       clearInterval(watchdog)
+      controller.abort()
       source?.close()
       source = undefined
     }

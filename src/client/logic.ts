@@ -486,20 +486,78 @@ export function classifyStreamFrame(data: string): StreamFrame {
   }
 }
 
-/** 看门狗判定：超过 staleMs 没有任何帧（含心跳）就重建连接。 */
+/**
+ * 看门狗判定：超过 staleMs 没有任何帧（含心跳）就重建连接。
+ *
+ * 边界处理：
+ * - 时间戳非法（NaN）说明计时已坏，按"该重建"处理，不能静默失效；
+ * - 差值负数（NTP 回拨让 lastFrameAt 跑到未来）无法判断，保守不重建，避免抖动。
+ */
 export function shouldReconnectStream(
   lastFrameAt: number,
   now: number,
   staleMs: number = STREAM_STALE_MS,
 ): boolean {
-  if (!Number.isFinite(lastFrameAt) || !Number.isFinite(now)) return false
+  if (!Number.isFinite(lastFrameAt) || !Number.isFinite(now)) return true
   return now - lastFrameAt > staleMs
 }
 
-/** 连接状态文案；live 不打扰用户（返回空串），其余给一条可读的兜底说明。 */
+/**
+ * 连接状态文案。
+ * - live / connecting 不打扰用户（首连属于正常过程，不能一进面板就闪黄条）；
+ * - reconnecting / offline 给可读兜底。
+ */
 export function describeStreamLink(state: StreamLinkState): string {
-  if (state === 'live') return ''
-  if (state === 'connecting') return '正在连接事件流…'
+  if (state === 'live' || state === 'connecting') return ''
   if (state === 'reconnecting') return '事件流中断，正在自动重连；列表仍可浏览，恢复后会自动对账'
   return '事件流已断开：实时更新暂不可用，可点「重新连接」或刷新页面'
+}
+
+/* ------------------------------------------------------------------ */
+/* 静默对账：把 HTTP 快照与对账期间收到的 SSE 帧按 id 合并             */
+/* ------------------------------------------------------------------ */
+
+/** 一条 SSE 帧给某个 id 留下的最新状态：有 item 就是新增/更新，removed 就是删除。 */
+export interface StreamFrameRecord {
+  /** 收到帧的本地时间（Date.now）。 */
+  at: number
+  item?: MemoryItem
+  removed?: true
+}
+
+/**
+ * 合并 `/list` 快照与对账窗口内收到的 SSE 帧。
+ *
+ * 为什么不能直接整表替换：快照是服务端某一刻的读取结果，而帧可能比它更新。
+ * 若在 `since` 之后收到过某 id 的帧，就以帧为准（新增/更新覆盖快照、删除剔除快照）；
+ * 快照里没有、但 `since` 之后新增过的条目要补回来。这样既不会吞掉事件，也不会让已删卡片复活。
+ */
+export function mergeSnapshotWithFrames(
+  snapshot: readonly MemoryItem[],
+  frames: ReadonlyMap<string, StreamFrameRecord>,
+  since: number,
+): MemoryItem[] {
+  const merged: MemoryItem[] = []
+  const snapshotIds = new Set<string>()
+
+  for (const item of snapshot) {
+    snapshotIds.add(item.id)
+    const frame = frames.get(item.id)
+    if (frame === undefined || frame.at <= since) {
+      merged.push(item)
+      continue
+    }
+    if (frame.removed === true) continue
+    merged.push(frame.item ?? item)
+  }
+
+  // 快照之后新增、但快照里没有的条目：按收到顺序插回最前面（新的在上）。
+  const lateArrivals: Array<{ at: number; item: MemoryItem }> = []
+  for (const [id, frame] of frames) {
+    if (frame.at <= since || snapshotIds.has(id)) continue
+    if (frame.removed === true || frame.item === undefined) continue
+    lateArrivals.push({ at: frame.at, item: frame.item })
+  }
+  lateArrivals.sort((left, right) => right.at - left.at)
+  return [...lateArrivals.map(entry => entry.item), ...merged]
 }

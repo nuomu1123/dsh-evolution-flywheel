@@ -22,7 +22,7 @@ import { createStrategyHooks } from './strategy.js'
 import type { MemoryContextBase } from './context.js'
 import { archiveIdsOf, buildProbeEvidence, compactCurationPayload, contentSimilarity, parseCurationPayload, similarErrorGroups, summarizeCurationQuality, summarizeCurationWithLlm } from './curator.js'
 import { buildSelfDiagnosis, isStuckReview } from './diagnosis.js'
-import { extractJson } from './dma.js'
+import { DMA_FLYWHEEL_STAGES, extractJson } from './dma.js'
 import { runCurationCluster } from './curation-cluster.js'
 import { complete } from './review-driver.js'
 import { answerProbe, createProbe, ignoreProbe, markProbeSearching } from './probes.js'
@@ -533,8 +533,9 @@ export async function handleMemoryApi(
       }
       appendAudit('dma.run', {
         discipline: discipline ?? 'auto',
+        // 与 dma.ts 的常量同源：一次完整漫游覆盖六阶段（含 feedback），字段放前面防止被面板截断。
+        flywheel: DMA_FLYWHEEL_STAGES.join(','),
         insights: items.length,
-        flywheel: 'search,comprehend,abstract,transfer,practice',
       })
       sendJson(res, 200, { ok: true, items, item: items[0] })
       return

@@ -70,7 +70,7 @@ test('认知探针：创建、去重、回答、跳过', async () => {
   })
 })
 
-test('主体性守卫：客服式提问不落库，带新信息的跨学科问题照常创建', async () => {
+test('主体性守卫：客服式提问不落库、留审计，带新信息的跨学科问题照常创建', async () => {
   await withStore(async store => {
     const rejected = await createProbe(store, {
       question: '需要我帮你整理一下这些记忆吗？',
@@ -79,6 +79,14 @@ test('主体性守卫：客服式提问不落库，带新信息的跨学科问�
     })
     assert.equal(rejected, undefined)
     assert.equal((await store.list()).filter(item => item.type === 'cognitive_probe').length, 0)
+
+    // 丢弃必须留痕：否则没人知道"为什么这次没探针"。
+    const { readAudit } = await import('../lib/audit.js')
+    const audits = readAudit(200).filter(entry => entry.event === 'memory.probe.rejected')
+    assert.ok(
+      audits.some(entry => String(entry.payload.question).includes('需要我')),
+      '客服式探针被拒后必须写入 memory.probe.rejected 审计',
+    )
 
     const kept = await createProbe(store, {
       question: '博弈论里的纳什均衡，能否解释我们的对抗机制为什么缺少随机扰动？',
@@ -89,14 +97,32 @@ test('主体性守卫：客服式提问不落库，带新信息的跨学科问�
   })
 })
 
-test('客服式判定不误伤带具体信息的疑问', () => {
-  assert.equal(isServiceToneQuestion('需要我帮你整理吗？'), true)
-  assert.equal(isServiceToneQuestion('是否需要我继续？'), true)
-  assert.equal(isServiceToneQuestion('要不要我帮你跑一遍测试？'), true)
-  assert.equal(isServiceToneQuestion('你希望我先归档还是先合并？'), true)
-  assert.equal(isServiceToneQuestion('这条分歧是否来自前提假设不同？'), false)
-  assert.equal(isServiceToneQuestion('模型在哪些场景会失效？'), false)
-  assert.equal(isServiceToneQuestion(''), false)
+test('客服式判定：文档反例必须命中，带实质信息的问句必须放行', () => {
+  // THE_GENESIS 7.4 明确列为禁止的句式（含无"我"前缀的变体，审查实测曾漏判）
+  for (const banned of [
+    '需要我帮你整理吗？',
+    '是否需要我继续？',
+    '要不要我帮你跑一遍测试？',
+    '要不要继续？',
+    '继续吗？',
+    '我帮你把这条整理成卡片？',
+    '要我把两条前提都列出来吗？',
+    '你希望我先归档还是先合并？',
+  ]) {
+    assert.equal(isServiceToneQuestion(banned), true, `应判为客服式：${banned}`)
+  }
+  // 带具体对象/前提/引用的问句不能误伤（审查实测过的 4 个误伤反例）
+  for (const allowed of [
+    '这条分歧是否来自前提假设不同？',
+    '模型在哪些场景会失效？',
+    '你希望「分歧」保持开放，还是必须收敛成一个结论？',
+    '请告诉我需要哪种前提，这条规律才能成立？',
+    '如果前提 A 成立，我可以继续沿用这条策略——但它的边界在哪？',
+    '你上次说「你希望系统自己判断」，那这里的边界在哪？',
+    '',
+  ]) {
+    assert.equal(isServiceToneQuestion(allowed), false, `不应误伤：${allowed}`)
+  }
 })
 
 test('认知简报：统计待回答、已回答与盲区', async () => {

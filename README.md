@@ -4,7 +4,7 @@
 
 > **哲学底座**：认知飞轮六部曲 —— 寻找 → 理解 → 概括 → 迁移 → 实践 → 反馈与调整，见 [`THE_GENESIS.md`](./THE_GENESIS.md)。
 
-**1.0.0 · MIT · 226 项测试 · 单包 DSH 插件 · 本地优先**
+**1.0.0 · MIT · 232 项测试 · 单包 DSH 插件 · 本地优先**
 
 ## 一个真实的故事
 
@@ -53,7 +53,10 @@
 
 ## 快速开始
 
-要求：Node.js `>=22.19`、pnpm `>=9`、已安装 DeepSeek Harness（源码 checkout 或 CLI）。
+要求：Node.js `>=22.19`、pnpm `>=9`（或 npm 10+）、已安装 DeepSeek Harness（源码 checkout 或 CLI）。
+
+> 包管理器：pnpm 与 npm 执行脚本等价；**仓库锁文件以 npm 为准**（跟踪 `package-lock.json`，CI 用 `npm ci`），
+> 用 pnpm 跑脚本会额外生成 `pnpm-lock.yaml`，不要提交它。
 
 ```bash
 git clone https://github.com/nuomu1123/dsh-evolution-flywheel.git dsh-evolution-flywheel
@@ -288,7 +291,7 @@ meta_insight / speculative
 要求：
 
 - Node.js `>=22.19`
-- pnpm `>=9`
+- pnpm `>=9`（或 npm 10+；锁文件为 `package-lock.json`，CI 用 `npm ci`）
 - 已安装 DeepSeek Harness 源码或可按文档使用 `pnpm dsh`
 
 ```bash
@@ -435,15 +438,15 @@ $DSH_HOME/storages/dsh-memory-minimal/dma_surfing.log
 - 模型输出被截断时尝试抢救已生成的带标签正文；
 - `agent/pre-step` 的后续失败不会把异常继续抛给 Agent 循环；
 - DMA 调度器 tick 自带 try/catch，单个 tick 失败不会杀死定时器；
-- SSE 事件流：服务端每 15s 心跳、前端 15s 看门狗（45s 无帧判定死链并重建）、重连成功后静默对账；断连只降级成琥珀色状态条，不占用红色错误块；
-- SSE 首帧写失败（客户端握手瞬间断开）立即摘除连接，异常不会冒到 HTTP handler。
+- SSE 事件流：服务端每 15s 心跳、前端 15s 看门狗（45s 无帧判定死链并重建）、重连成功后静默对账（快照与对账窗口内的帧按 id 合并，不整表覆盖）；断连只降级成琥珀色状态条，不占用红色错误块；
+- 死连接摘除：先看 `destroyed / writableEnded`，再由 `close` 事件与写异常兜底（真实 Node 向已销毁 socket `write` 通常返回 false 而不抛错）。
 
 ---
 
 ## 测试
 
 ```bash
-npm test        # 等价：pnpm test
+pnpm test       # 等价：npm test
 ```
 
 覆盖：
@@ -463,7 +466,7 @@ npm test        # 等价：pnpm test
 - 浏览器审计不进入「待裁决」（审计是机器事实，直接 approved）；
 - `browser_evaluate` 的代码副作用检测（fetch/localStorage/cookie 写入才留痕）。
 
-`npm test` 的失败应视为阻断：它包含全部 15 个测试文件。
+`pnpm test`（或 `npm test`）的失败应视为阻断：它包含全部 17 个测试文件。
 
 ---
 
@@ -518,12 +521,14 @@ npm test        # 等价：pnpm test
 - [x] 探针原因字段兜底（模型没给原因时不再留空白）
 - [x] 认知飞轮六部曲写入 `THE_GENESIS.md`（寻找/理解/概括/迁移/实践/反馈），并落成 DMA 日志的 `flywheel=` 阶段标记
 - [x] 跨学科小提炼重构：DMA 强制五步推导（原貌/概括/迁移/代价/启示）+ 前端「思维推导卡片」渲染
-- [x] 新增契约测试 `test/insight-pipeline.test.mjs`（10 项），全套 217 项全绿
+- [x] 新增契约测试 `test/insight-pipeline.test.mjs`（10 项），当时全套 217 项全绿
 - [x] `THE_GENESIS.md` 补齐四大核心机制（共享现实 / 世界模型与预测误差 / 策略自进化 / 主体性）与六部曲落地矩阵
 - [x] 审计事件带 `flywheel` 阶段字段（`dma.run` / `memory.model.distill` / `memory.curation.run` / `memory.review.retry`），闭环可审计
 - [x] 认知探针主体性守卫：客服式套话不落库；DMA 探针改为携带具体分歧与跨学科前提
 - [x] 前端事件流韧性：SSE 心跳 + 看门狗 + 自动重连 + 琥珀色状态条（替换红色死块）
-- [x] 思维推导卡片主色对齐 speculative 蓝；新增 `test/stream-resilience.test.mjs`（7 项），全套 226 项全绿
+- [x] 思维推导卡片主色对齐 speculative 蓝；新增 `test/stream-resilience.test.mjs`（7 项），当时全套 226 项全绿
+- [x] 独立审查修复：静默对账按 id 合并快照与帧（不吞事件）、看门狗可升级 offline、手动重连失败保持 offline、静默对账失败不弹红框、destroyed/closed 连接处理、探针拒绝留审计
+- [x] `test/stream-resilience.test.mjs` 扩到 13 项（含死链与合并在内），全套 232 项全绿
 
 下一步：
 
