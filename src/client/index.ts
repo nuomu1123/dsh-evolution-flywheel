@@ -1753,8 +1753,13 @@ function MemoryExplorerPage() {
     return items.filter((item: MemoryItem) => matchesFilter(item, activeTab, keyword))
   }, [items, query, activeTab])
 
+  // 分页：一次渲染 40 张，其余按需载入。185 张卡全量渲染时，每次输入/SSE 帧都会全量重建（性能实测瓶颈）。
+  const PAGE_SIZE = 40
+  const [visibleCount, setVisibleCount] = React.useState(PAGE_SIZE)
+  React.useEffect(() => { setVisibleCount(PAGE_SIZE) }, [query, activeTab])
+
   const visibleItems = detailId === null
-    ? filtered
+    ? filtered.slice(0, visibleCount)
     : filtered.filter((item: MemoryItem) => item.id === detailId)
 
   const closeDetail = () => {
@@ -2829,18 +2834,23 @@ function MemoryExplorerPage() {
           ? h('span', { key: 'badge', style: memoryStyles.sourceVerified }, '✓ 已验证')
           : h('span', { key: 'badge', style: memoryStyles.sourceInferred }, '推测 · 未验证'),
       ]),
-                h('textarea', {
-                  key: 'input',
-                  style: memoryStyles.resolutionInput,
-                  rows: 3,
-                  value: draftOf(item),
-                  disabled: busy,
-                  placeholder: '例如：检查路径是否存在，修正路径后重试',
-                  onChange: (event: { target: { value: string } }) => {
-                    const value = event.target.value
-                    setDrafts((previous: Record<string, string>) => ({ ...previous, [item.id]: value }))
-                  },
-                }),
+                // 折叠态不渲染 textarea：108 张排错卡各带一个常驻 textarea 是列表的主要渲染负担（P2/性能）。
+                // 折叠时只读展示已有解法，展开后再给编辑框。
+                isExpanded
+                  ? h('textarea', {
+                    key: 'input',
+                    style: memoryStyles.resolutionInput,
+                    rows: 3,
+                    value: draftOf(item),
+                    disabled: busy,
+                    placeholder: '例如：检查路径是否存在，修正路径后重试',
+                    onChange: (event: { target: { value: string } }) => {
+                      const value = event.target.value
+                      setDrafts((previous: Record<string, string>) => ({ ...previous, [item.id]: value }))
+                    },
+                  })
+                  : h('div', { key: 'input-readonly', style: memoryStyles.detail },
+                    (item.resolution ?? '').trim() === '' ? '（尚无解决办法，展开后可填写）' : item.resolution),
                 draftOf(item).trim() === ''
                   ? h('div', { key: 'helper', style: memoryStyles.helper }, '尚未记录解决办法，请补充后确认')
                   : null,
@@ -3153,6 +3163,17 @@ function MemoryExplorerPage() {
         ])
       }),
     ) : null,
+    // 分页载入：一次只渲染 40 张，避免 185 张卡全量重建（性能实测瓶颈在 DOM 而非过滤算法）。
+    !loading && detailId === null && filtered.length > visibleItems.length
+      ? h('div', { key: 'more', style: { display: 'flex', justifyContent: 'center', padding: '8px 0' } }, [
+        h('button', {
+          key: 'load-more',
+          type: 'button',
+          style: memoryStyles.button,
+          onClick: () => setVisibleCount((previous: number) => previous + PAGE_SIZE),
+        }, `载入更多（已显示 ${visibleItems.length} / ${filtered.length}）`),
+      ])
+      : null,
   ])
 }
 
