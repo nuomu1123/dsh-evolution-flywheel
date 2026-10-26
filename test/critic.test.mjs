@@ -5,6 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { criticize, criticEnabled, criticRoutes, criticSummary } from '../lib/memory/critic.js'
+import { computeCriticAdoption } from '../lib/memory/adoption.js'
 
 const okResponse = content => ({
   ok: true,
@@ -71,4 +72,50 @@ test('criticSummary 只给摘要，不带批评全文', () => {
     criticSummary({ ok: true, critic: 'm', issues: [{ severity: 'high', where: 'a', why: 'b' }] }),
     /1 条（high 1）/u,
   )
+})
+
+// ---- 批评者采纳率（b665bf2 引入、此前无测试；2026-10-26 抽取为纯函数后补测） ----
+
+const auditEntry = (event, payload) => ({
+  ts: '2026-10-26T00:00:00.000Z',
+  plugin: 'dsh-evolution-flywheel',
+  event,
+  payload,
+})
+
+test('采纳率：批评有意见 + 审阅驳回 = 采纳', () => {
+  const result = computeCriticAdoption([
+    auditEntry('memory.critic', { source: 'review', id: 'a', issues: 2 }),
+    auditEntry('memory.review.verdict', { id: 'a', decision: 'reject' }),
+  ])
+  assert.deepEqual(result, { tracked: 1, aligned: 1, misaligned: 0, rate: 1 })
+})
+
+test('采纳率：批评有意见但审阅通过 = 未采纳', () => {
+  const result = computeCriticAdoption([
+    auditEntry('memory.critic', { source: 'review', id: 'b', issues: 1 }),
+    auditEntry('memory.review.verdict', { id: 'b', decision: 'approve' }),
+  ])
+  assert.equal(result.tracked, 1)
+  assert.equal(result.aligned, 0)
+  assert.equal(result.rate, 0)
+})
+
+test('采纳率：无意见 / 手动触发 / 缺裁决 都不计入', () => {
+  const result = computeCriticAdoption([
+    auditEntry('memory.critic', { source: 'review', id: 'c', issues: 0 }),
+    auditEntry('memory.critic', { source: 'api', id: 'd', issues: 3 }),
+    auditEntry('memory.review.verdict', { id: 'e', decision: 'reject' }),
+  ])
+  assert.deepEqual(result, { tracked: 0, aligned: 0, misaligned: 0, rate: null })
+})
+
+test('采纳率：同一 id 多次审阅只取最新一条（输入按最新在前）', () => {
+  const result = computeCriticAdoption([
+    auditEntry('memory.review.verdict', { id: 'f', decision: 'approve' }),
+    auditEntry('memory.review.verdict', { id: 'f', decision: 'reject' }),
+    auditEntry('memory.critic', { source: 'review', id: 'f', issues: 1 }),
+  ])
+  assert.equal(result.tracked, 1)
+  assert.equal(result.aligned, 0, '最新结论是 approve，不应拿旧 reject 充数')
 })

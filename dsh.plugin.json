@@ -13,7 +13,8 @@
     "memory_delete",
     "memory_approve",
     "memory_update_resolution",
-    "memory_probe",`n    "memory_remember"
+    "memory_probe",
+    "memory_remember"
   ],
   "commands": [
     "clarify"
